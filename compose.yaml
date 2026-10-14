@@ -1,0 +1,14 @@
+# docker compose up -d   ->  http://<this machine>:8080
+services:
+  cssetup:
+    image: ghcr.io/saphid/cs-customsetup:latest
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - profiles:/data
+    restart: unless-stopped
+    # environment:
+    #   PUBLIC_URL: https://setup.example.com   # address used in QR codes and the station script
+volumes:
+  profiles:

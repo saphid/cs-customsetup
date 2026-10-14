@@ -1,0 +1,20 @@
+{
+  "name": "cs-customsetup",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Build a CS2 setup on your phone, type a 6-digit code at any LAN PC, play.",
+  "scripts": {
+    "start": "node server/server.mjs",
+    "test": "node --test --disable-warning=ExperimentalWarning tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  },
+  "packageManager": "pnpm@11.24.0",
+  "license": "MIT",
+  "repository": "github:saphid/cs-customsetup"
+}
