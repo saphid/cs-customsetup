@@ -141,7 +141,9 @@ Check 'second reset is a no-op' ($r.text -match 'Nothing to reset') $r.text
 
 # A baseline written by the previous version (userCfgs, no steamRoot) still resets
 $r = Station @('-Code', $CodeA)
+Check 'load after reset' ($r.code -eq 0) $r.text
 $bf = Join-Path $env:LOADOUT_STATE_DIR 'baseline\baseline.json'
+if (-not (Test-Path $bf)) { New-Item -ItemType Directory -Force (Split-Path $bf) | Out-Null; [IO.File]::WriteAllText($bf, '{}') }
 $old = Get-Content $bf -Raw | ConvertFrom-Json
 [pscustomobject]@{ created = $old.created; mouse = $old.mouse; files = $old.files; userCfgs = @($userCfg) } | ConvertTo-Json -Depth 5 | Set-Content $bf -Encoding UTF8
 New-Item -ItemType Directory -Force $userCfg2 | Out-Null
