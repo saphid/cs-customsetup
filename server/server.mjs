@@ -2,9 +2,11 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { join, extname, normalize } from 'node:path';
+import { join, extname, normalize, dirname } from 'node:path';
+import { networkInterfaces } from 'node:os';
 import QRCode from 'qrcode';
-import { Store } from './store.mjs';
+import { Store, StoreFullError } from './store.mjs';
+import { Signer } from './signing.mjs';
 import { normalizeProfile, ValidationError } from './profile.mjs';
 import { buildCfg, stationBundle } from './cfg.mjs';
 
@@ -14,10 +16,44 @@ const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; ch
   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png',
   '.webmanifest': 'application/manifest+json', '.ico': 'image/x-icon' };
 
-export function createApp({ store, publicUrl, trustProxy = false, createLimit = 60 } = {}) {
-  const creations = new Map(); // client -> timestamps, a light brake on scripted spam
+const LOOPBACK = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?$/i;
 
-  const baseUrl = (req) => (publicUrl || `http://${req.headers.host}`).replace(/\/+$/, '');
+// The first private IPv4 address of this machine, for links opened on other devices.
+function lanAddress() {
+  for (const list of Object.values(networkInterfaces())) {
+    for (const a of list || []) if (a.family === 'IPv4' && !a.internal) return a.address;
+  }
+  return null;
+}
+
+// Per-client request budget over a sliding minute.
+function limiter(limit) {
+  const seen = new Map();
+  return (client) => {
+    const now = Date.now();
+    const recent = (seen.get(client) || []).filter((t) => now - t < 60_000);
+    if (recent.length >= limit) return false;
+    recent.push(now); seen.set(client, recent);
+    if (seen.size > 10_000) seen.clear();
+    return true;
+  };
+}
+
+export function createApp({ store, publicUrl, trustProxy = false, createLimit = 60, readLimit = 600,
+  signer = new Signer(), lanHost = lanAddress } = {}) {
+  const allowCreate = limiter(createLimit);
+  const allowRead = limiter(readLimit);
+  const qrCache = new Map();
+
+  // Links for other devices (QR codes, the station script). A page opened as
+  // localhost would hand out links to the phone or PC itself, so loopback
+  // hosts are swapped for this machine's LAN address.
+  const baseUrl = (req) => {
+    if (publicUrl) return publicUrl.replace(/\/+$/, '');
+    const host = String(req.headers.host || '');
+    const lan = LOOPBACK.test(host) && lanHost();
+    return `http://${lan ? lan + (host.match(/:\d+$/)?.[0] || '') : host}`;
+  };
 
   const send = (res, status, body, type = 'application/json; charset=utf-8', extra = {}) => {
     const data = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
@@ -39,47 +75,72 @@ export function createApp({ store, publicUrl, trustProxy = false, createLimit = 
 
   // Behind a reverse proxy every player shares the proxy's address, so the
   // client address comes from X-Forwarded-For only when the operator says so.
-  const clientOf = (req) => (trustProxy && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim())
+  // The last entry is the one the proxy added; earlier ones come from the client.
+  const clientOf = (req) => (trustProxy && String(req.headers['x-forwarded-for'] || '').split(',').pop().trim())
     || req.socket.remoteAddress;
 
-  const allowCreate = (client) => {
-    const now = Date.now();
-    const recent = (creations.get(client) || []).filter((t) => now - t < 60_000);
-    if (recent.length >= createLimit) return false;
-    recent.push(now); creations.set(client, recent);
-    if (creations.size > 10_000) creations.clear();
-    return true;
+  // Signed responses: the station verifies X-Loadout-Signature with the key baked into it.
+  const sendSigned = (res, body, type) => {
+    const bytes = Buffer.from(body, 'utf8');
+    send(res, 200, bytes, type, { 'X-Loadout-Signature': signer.sign(bytes) });
   };
 
   async function api(req, res, path, query) {
     if (path === '/api/health') return send(res, 200, { ok: true });
-
-    if (path === '/api/profiles' && req.method === 'POST') {
-      if (!allowCreate(clientOf(req))) return send(res, 429, { error: 'Too many new profiles; wait a minute' });
-      const profile = normalizeProfile(await readJson(req));
-      const { code, editKey } = store.create(profile);
-      return send(res, 201, { code, editKey, profile });
+    // What the web app shows admins: the address other devices should use and the signing key fingerprint.
+    if (path === '/api/info') {
+      const url = baseUrl(req);
+      return send(res, 200, { url, fingerprint: signer.fingerprint, reachable: !LOOPBACK.test(new URL(url).host) });
     }
 
-    const match = path.match(/^\/api\/profiles\/(\d{6})(?:\/(cfg|qr\.svg|station))?$/);
+    if (path === '/api/profiles' && req.method === 'POST') {
+      if (!allowCreate(clientOf(req))) return send(res, 429, { error: 'Too many new setups from this device. Wait a minute and try again.' });
+      const profile = normalizeProfile(await readJson(req));
+      try {
+        const { code, editKey } = store.create(profile);
+        return send(res, 201, { code, editKey, profile });
+      } catch (error) {
+        if (error instanceof StoreFullError) return send(res, 503, { error: 'This server is full. Ask the event admin.' });
+        throw error;
+      }
+    }
+
+    const match = path.match(/^\/api\/profiles\/(\d{6})(?:\/(cfg|qr\.svg|station|verify))?$/);
     if (!match) return send(res, 404, { error: 'Not found' });
     const [, code, view] = match;
+    if (!allowRead(clientOf(req))) return send(res, 429, { error: 'Too many requests. Wait a minute and try again.' });
+
+    const found = store.get(code);
+    if (!found) return send(res, 404, { error: 'No setup with that code' });
+    const owner = () => store.canEdit(code, req.headers['x-edit-key']);
 
     if (!view && req.method === 'PUT') {
-      if (!store.get(code)) return send(res, 404, { error: 'No profile with that code' });
-      if (!store.canEdit(code, req.headers['x-edit-key'])) return send(res, 403, { error: 'Edit key does not match' });
+      if (!owner()) return send(res, 403, { error: 'This device does not have the edit link for this setup' });
       const profile = normalizeProfile(await readJson(req));
       store.update(code, profile);
       return send(res, 200, { code, profile });
     }
-    if (req.method !== 'GET') return send(res, 405, { error: 'Method not allowed' });
+    if (!view && req.method === 'DELETE') {
+      if (!owner()) return send(res, 403, { error: 'This device does not have the edit link for this setup' });
+      store.delete(code);
+      return send(res, 204, '');
+    }
+    // Checks an edit key before the web app stores it, so a wrong link never replaces a working one.
+    if (view === 'verify' && req.method === 'POST') {
+      return owner() ? send(res, 200, { ok: true }) : send(res, 403, { error: 'That edit link does not match this setup' });
+    }
+    if (req.method !== 'GET' || view === 'verify') return send(res, 405, { error: 'Method not allowed' });
 
-    const found = store.get(code);
-    if (!found) return send(res, 404, { error: 'No profile with that code' });
     if (!view) return send(res, 200, { code, ...found });
     // The QR code only links to the profile page, so it never needs revalidation.
     if (view === 'qr.svg') {
-      const svg = await QRCode.toString(`${baseUrl(req)}/#/p/${code}`, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
+      const target = `${baseUrl(req)}/#/p/${code}`;
+      let svg = qrCache.get(target);
+      if (!svg) {
+        svg = await QRCode.toString(target, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
+        if (qrCache.size > 2000) qrCache.clear();
+        qrCache.set(target, svg);
+      }
       return send(res, 200, svg, 'image/svg+xml');
     }
     // Stored profiles are checked again against today's rules before anything
@@ -95,29 +156,48 @@ export function createApp({ store, publicUrl, trustProxy = false, createLimit = 
         { 'Content-Disposition': `attachment; filename="cssetup_${code}.cfg"` });
     }
     store.countLoad(code);
-    return send(res, 200, stationBundle(profile, code, { stationDpi }));
+    return sendSigned(res, JSON.stringify(stationBundle(profile, code, { stationDpi })), 'application/json; charset=utf-8');
   }
+
+  // Server address for scripts: only URL characters, so it cannot break out of a quoted string.
+  const scriptUrl = (req) => baseUrl(req).replace(/[^\w.:/\-\[\]]/g, '');
 
   async function station(req, res) {
-    // The station script ships with this server's address baked in.
+    // The station script ships with this server's address and public key baked in.
     const template = await readFile(join(root, 'station', 'Loadout.ps1'), 'utf8');
-    const script = template.replace('__SERVER_URL__', baseUrl(req).replace(/'/g, ''));
-    send(res, 200, script, 'text/plain; charset=utf-8', { 'Content-Disposition': 'attachment; filename="Loadout.ps1"' });
+    const script = template.replace('__SERVER_URL__', scriptUrl(req)).replace('__SIGNING_KEY__', signer.publicXml)
+      .replace('__SIGNING_FP__', signer.fingerprint);
+    res.setHeader('Content-Disposition', 'attachment; filename="Loadout.ps1"');
+    sendSigned(res, script, 'text/plain; charset=utf-8');
   }
 
-  // Double-click launcher: fetches the latest station script on every start
-  // (keeps the last copy when the server is unreachable) and runs it.
+  // Double-click launcher: fetches the latest station script on every start,
+  // keeps it only if its signature matches the key baked in here, and falls
+  // back to the last verified copy when the server is unreachable.
   function stationCmd(req, res) {
-    const url = baseUrl(req).replace(/[^\w.:/\-\[\]]/g, '');
+    const url = scriptUrl(req);
+    const update = [
+      "$ErrorActionPreference = 'Stop'",
+      "$f = Join-Path $env:LOADOUT_DIR 'Loadout.ps1'",
+      'try {',
+      `  $r = Invoke-WebRequest '${url}/station.ps1' -UseBasicParsing -TimeoutSec 10`,
+      '  $bytes = $r.RawContentStream.ToArray()',
+      '  $rsa = New-Object Security.Cryptography.RSACryptoServiceProvider',
+      `  $rsa.FromXmlString('${signer.publicXml}')`,
+      "  if (-not $rsa.VerifyData($bytes, 'SHA256', [Convert]::FromBase64String([string]$r.Headers['X-Loadout-Signature']))) { throw 'the download failed its signature check' }",
+      "  [IO.File]::WriteAllBytes(\"$f.download\", $bytes); Move-Item \"$f.download\" $f -Force",
+      '} catch {',
+      `  Write-Host "Loadout: could not update the station app from ${url} ($($_.Exception.Message))."`,
+      "  if (-not (Test-Path $f)) { Write-Host 'Download Loadout.cmd again from the admin page.'; exit 1 }",
+      "  Write-Host 'Using the copy downloaded earlier.'",
+      '}',
+    ].join('\n');
     const lines = [
       '@echo off',
-      `rem Loadout station for ${url}`,
+      `rem Loadout station for ${url} (signing key ${signer.fingerprint})`,
       'set "LOADOUT_DIR=%~dp0"',
-      // Download to a temporary file and keep it only if it is a complete station script.
-      'powershell -NoProfile -ExecutionPolicy Bypass -Command "$f = Join-Path $env:LOADOUT_DIR \'Loadout.ps1\'; $t = $f + \'.download\'; '
-        + `try { Invoke-WebRequest '${url}/station.ps1' -OutFile $t -UseBasicParsing; `
-        + "if (-not (Select-String -Path $t -Pattern '^# LOADOUT-END' -Quiet)) { throw 'incomplete' }; Move-Item $t $f -Force } "
-        + `catch { Remove-Item $t -ErrorAction SilentlyContinue; if (-not (Test-Path $f)) { Write-Host 'Cannot reach ${url}'; exit 1 } }"`,
+      // -EncodedCommand (UTF-16LE base64) avoids cmd.exe quoting rules entirely.
+      `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${Buffer.from(update, 'utf16le').toString('base64')}`,
       'if errorlevel 1 (pause & exit /b 1)',
       'powershell -NoProfile -ExecutionPolicy Bypass -File "%LOADOUT_DIR%Loadout.ps1" %*',
       '',
@@ -158,13 +238,24 @@ export function createApp({ store, publicUrl, trustProxy = false, createLimit = 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT || 8787);
   const host = process.env.HOST || '0.0.0.0';
-  const store = new Store(process.env.DB_FILE || join(root, 'data', 'profiles.db'));
+  const dbFile = process.env.DB_FILE || join(root, 'data', 'profiles.db');
+  const store = new Store(dbFile, { maxProfiles: Number(process.env.MAX_PROFILES || 100_000) });
+  const signer = new Signer(process.env.SIGNING_KEY_FILE || join(dirname(dbFile), 'signing-key.pem'));
+  // Optional retention: delete setups neither saved nor loaded for this many days.
+  const ttlDays = Number(process.env.PROFILE_TTL_DAYS || 0);
+  if (ttlDays > 0) {
+    const prune = () => { const n = store.prune(ttlDays); if (n) console.log(`Deleted ${n} setups unused for ${ttlDays} days`); };
+    prune(); setInterval(prune, 86_400_000).unref();
+  }
   createApp({
     store,
+    signer,
     publicUrl: process.env.PUBLIC_URL,
     trustProxy: process.env.TRUST_PROXY === '1',
     createLimit: Number(process.env.CREATE_LIMIT || 60),
+    readLimit: Number(process.env.READ_LIMIT || 600),
   }).listen(port, host, () => {
     console.log(`Loadout listening on http://${host}:${port}`);
+    console.log(`Station signing key fingerprint: ${signer.fingerprint}`);
   });
 }

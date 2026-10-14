@@ -8,6 +8,13 @@ const BIND_COMMANDS = new Set(['drop', 'lastinv', 'invprev', 'invnext', 'say', '
   'buymenu', 'teammenu', 'showscores', 'messagemode', 'messagemode2', 'radio', 'radio1', 'radio2', 'radio3', 'use', 'kill',
   'callvote']);
 
+// Held actions a bind may start. Release commands (-attack) and a second held
+// action in one bind are refused: that is how jumpthrow, snap-tap and null-bind
+// scripts work, and Valve blocks them on official servers (August 2024).
+const ACTIONS = new Set(['forward', 'back', 'moveleft', 'moveright', 'jump', 'duck', 'sprint', 'attack', 'attack2',
+  'reload', 'use', 'voicerecord', 'lookatweapon', 'showscores', 'spray_menu', 'radialradio', 'radialradio2',
+  'radialradio3', 'cl_show_team_equipment', 'left', 'right']);
+
 export const KEY_NAME = /^[a-z0-9_]{1,16}$|^[`\-=[\];',./\\]$/;
 const NUMBER = /^-?(\d+(\.\d*)?|\.\d+)$/;
 // Text settings (radio wheel lines, map lists, bindings names) may hold any
@@ -46,17 +53,23 @@ export function checkValue(name, raw) {
   return null;
 }
 
-// A bind's command: one or more ';'-separated parts, each an action, a slot,
-// an allowed command, or an allowed setting with a valid value. Nested
-// bind/alias/exec and every unlisted command are refused.
+// A bind's command: one or more ';'-separated parts, each a held action (at
+// most one), a slot, an allowed command, or an allowed setting with a valid
+// value. Release actions, nested bind/alias/exec and every unlisted command are refused.
 export function checkBindCommand(command) {
   const text = String(command).trim();
   if (!text || text.length > 200 || /["\r\n]/.test(text)) return 'command must be 1-200 characters without quotes';
+  let held = 0;
   for (const part of text.split(';')) {
     const [head, ...args] = part.trim().split(/\s+/);
     if (!head) continue;
     const h = head.toLowerCase();
-    if (/^[+-][a-z0-9_]+$/.test(h) && !args.length) continue;
+    if (/^-[a-z0-9_]+$/.test(h)) return `"${head}" releases an action: scripts like jumpthrow and null binds are not allowed`;
+    if (/^\+[a-z0-9_]+$/.test(h) && !args.length) {
+      if (!ACTIONS.has(h.slice(1))) return `"${head}" is not a CS2 action`;
+      if (++held > 1) return 'one key can hold only one action (+jump, +attack, ...); combined actions are blocked in CS2';
+      continue;
+    }
     if (/^slot\d{1,2}$/.test(h) && !args.length) continue;
     if (h === 'toggle') {          // toggle <setting> [value ...]
       if (args.length && isAllowedConvar(args[0]) && args.slice(1).every((v) => !checkValue(args[0], v))) continue;

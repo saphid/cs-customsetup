@@ -26,6 +26,7 @@ try {
     }
     # The double-click launcher: downloads the script, then runs it with the given arguments.
     $dir = Join-Path $env:TEMP 'cssetup cmd test'; New-Item -ItemType Directory -Force $dir | Out-Null
+    $env:LOADOUT_STATE_DIR = Join-Path $env:TEMP 'loadout-ci-state'   # never a real station's state
     Invoke-WebRequest "$server/station.cmd" -OutFile (Join-Path $dir 'Loadout.cmd') -UseBasicParsing
     $cmdOut = & cmd.exe /c "`"$(Join-Path $dir 'Loadout.cmd')`" -Reset" 2>&1 | Out-String
     $cmdOk = $LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $dir 'Loadout.ps1')) -and -not (Test-Path (Join-Path $dir 'Loadout.ps1.download'))

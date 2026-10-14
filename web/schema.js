@@ -32,6 +32,7 @@ export const NUMBERS = {
   'hud.radarScale': [0.25, 1, 0.7],
   'hud.radarHudScale': [0.8, 1.3, 1],
   'misc.fpsMax': [0, 1000, 0, true],
+  'misc.showFps': [0, 3, 0, true],   // cl_showfps mode; older saves stored true/false (= 1/0)
 };
 
 export const BOOLEANS = {
@@ -41,7 +42,6 @@ export const BOOLEANS = {
   'crosshair.followRecoil': true,
   'hud.radarCentered': true,
   'hud.radarRotate': true,
-  'misc.showFps': false,
   'windows.applyMouse': true,
   'video.apply': true,
 };

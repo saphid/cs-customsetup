@@ -71,7 +71,7 @@ export function buildCfg(p, code, { stationDpi } = {}) {
     `cl_radar_rotate ${q(+p.hud.radarRotate)}`,
     `volume ${q(p.audio.volume)}`,
     `fps_max ${q(p.misc.fpsMax)}`,
-    `cl_showfps ${q(+p.misc.showFps)}`,
+    `cl_showfps ${q(p.misc.showFps)}`,
   );
   if (p.binds.length) {
     lines.push('', '// Binds');
@@ -89,6 +89,8 @@ export function stationBundle(p, code, { stationDpi } = {}) {
   const sens = stationSensitivity(p, stationDpi);
   const edpi = Math.round(p.mouse.dpi * p.mouse.sensitivity);
   return {
+    game: 'cs2',
+    bundleVersion: 1,
     code,
     name: p.name,
     team: p.team,

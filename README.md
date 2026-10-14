@@ -78,12 +78,34 @@ For an internet-facing server, put it behind HTTPS and set `PUBLIC_URL`
 
 ## Configuration
 
-Environment: `PORT` (8787; 8080 in the Docker image), `HOST` (0.0.0.0),
-`DB_FILE` (`data/profiles.db`; `/data/profiles.db` in Docker), `PUBLIC_URL`
-(base URL in QR codes and the station script; defaults to the request's Host
-header), `TRUST_PROXY=1` (take the client address from `X-Forwarded-For` behind
-a reverse proxy), `CREATE_LIMIT` (new profiles per client per minute, default
-60).
+| Variable | Default | Meaning |
+|---|---|---|
+| `PORT` | 8787 (8080 in Docker) | HTTP port |
+| `HOST` | 0.0.0.0 | Listen address |
+| `DB_FILE` | `data/profiles.db` (`/data/profiles.db` in Docker) | SQLite database |
+| `SIGNING_KEY_FILE` | `signing-key.pem` next to the database | Private key that signs the station script and every setup; created on first start. Keep it with the database: a new key means every PC must download Loadout.cmd again. |
+| `PUBLIC_URL` | the request's address | Base URL in QR codes and the station script. Pages opened as `localhost` hand out this machine's LAN address instead. |
+| `TRUST_PROXY=1` | off | Behind a reverse proxy: take the client address from the last `X-Forwarded-For` entry (the one your proxy adds) |
+| `CREATE_LIMIT` | 60 | New setups per client per minute |
+| `READ_LIMIT` | 600 | Setup reads per client per minute (stations behind one NAT share this) |
+| `MAX_PROFILES` | 100000 | Stop accepting new setups beyond this many |
+| `PROFILE_TTL_DAYS` | off | Delete setups neither saved nor loaded for this many days |
+
+### Security model
+
+- Codes are public read-only identifiers: anyone with a code can view or copy
+  that setup (players are told before they add their name). Editing and
+  deleting need the private edit link, which stays on the player's device.
+- Everything a station runs or applies is signed. The server creates an RSA key
+  on first start, bakes the public key into `Loadout.cmd` and `Loadout.ps1`,
+  and signs the station script and every setup bundle. A response altered on
+  the way (for example plain HTTP on a venue network) fails verification and is
+  not applied. Trust starts when an admin downloads `Loadout.cmd`, so do that
+  from a trusted network or over HTTPS, and compare the key fingerprint on the
+  admin page, in the server log and in the Loadout window.
+- Settings are checked against an allowlist generated from CS2's convar list.
+  Binds may hold one action and may not release actions, which blocks
+  jumpthrow, snap-tap and null-bind scripts.
 
 ## Development
 
@@ -94,7 +116,8 @@ CI=true pnpm test
 ```
 
 Windows end-to-end test of the station (any Windows 10/11 PC with Node; no CS2
-needed; CI runs it on every push):
+needed; it keeps its own state folder and puts the PC's mouse settings back;
+CI runs it on every push):
 
 ```powershell
 pnpm install
@@ -117,24 +140,28 @@ locations, convar ranges, prior art and the real-game verification are in
 
 ### Station commands
 
-`Loadout.cmd` (from `/station.cmd`) downloads the latest `Loadout.ps1` on every start and passes
-its arguments through. The script can also be used directly:
+`Loadout.cmd` (from `/station.cmd`) downloads the latest signed `Loadout.ps1`
+on every start, keeps the last verified copy if the server is unreachable, and
+passes its arguments through:
 
-```powershell
-powershell -ExecutionPolicy Bypass -Command "irm http://<server>/station.ps1 -OutFile Loadout.ps1; .\Loadout.ps1"
-.\Loadout.ps1 -MouseDpi 800        # once per PC: station mouse DPI (remembered)
-.\Loadout.ps1                      # full-screen window
-.\Loadout.ps1 -Code 123456 -Launch # load and start CS2
-.\Loadout.ps1 -Reset               # restore the station
-.\Loadout.ps1 -SaveBaseline        # admin: capture this PC (CS2 run once) before players
+```bat
+Loadout.cmd                          :: full-screen window
+Loadout.cmd -MouseDpi 800            :: once per PC: the station mouse's DPI (remembered)
+Loadout.cmd -ConfirmCloudOff         :: record that Steam Cloud is off for CS2
+Loadout.cmd -Check                   :: readiness report (exit code 2 when not ready)
+Loadout.cmd -Code 123456 -Launch     :: load a setup and start CS2
+Loadout.cmd -Reset                   :: restore the station
+Loadout.cmd -SaveBaseline            :: capture this PC (CS2 run once) before players
+Loadout.cmd -Prefetch codes.txt      :: cache setups so they load during a server outage
 ```
 
 The first load (or `-SaveBaseline`) saves a baseline in
 `%LOCALAPPDATA%\CSSetup\baseline`: the original `autoexec.cfg`, every file in
 the Steam accounts' CS2 cfg folders, and the Windows mouse settings. Every
 load starts from it; files and account folders that appear later belong to a
-player and are removed. Prepare each PC by running CS2 once before the first
-player, so its video file is part of the baseline.
+player and are removed. Only one Loadout window or command runs at a time on a
+PC. Every setup a PC loads is cached there, signed, so it loads again while the
+server is down.
 
 ### Notes
 
@@ -158,8 +185,6 @@ player, so its video file is part of the baseline.
   mouse) and GPU scaling for stretched 4:3 (NVIDIA or AMD control panel).
 - Jumpthrow, snap-tap and null-bind scripts are blocked on official servers
   and at most tournaments, so the bind presets leave them out.
-- Codes are public read-only identifiers; anyone with a code can load or copy
-  it, as with crosshair share codes. Editing needs the edit key.
 
 ## License
 

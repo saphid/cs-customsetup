@@ -6,9 +6,14 @@ import { dirname } from 'node:path';
 
 const hash = (key) => createHash('sha256').update(key).digest();
 
+export class StoreFullError extends Error {}
+
 export class Store {
-  constructor(file) {
+  // maxProfiles caps storage (and keeps most of the 900,000 codes free, so a
+  // new code is found at once and codes stay hard to guess).
+  constructor(file, { maxProfiles = 100_000 } = {}) {
     if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
+    this.maxProfiles = maxProfiles;
     this.db = new DatabaseSync(file);
     this.db.exec(`
       PRAGMA journal_mode = WAL;
@@ -20,9 +25,15 @@ export class Store {
         updated_at TEXT NOT NULL,
         loads INTEGER NOT NULL DEFAULT 0
       );`);
+    // Added later: when a station last loaded the profile (for retention).
+    const columns = this.db.prepare('PRAGMA table_info(profiles)').all().map((c) => c.name);
+    if (!columns.includes('loaded_at')) this.db.exec('ALTER TABLE profiles ADD COLUMN loaded_at TEXT');
   }
 
+  count() { return this.db.prepare('SELECT COUNT(*) AS n FROM profiles').get().n; }
+
   create(profile) {
+    if (this.count() >= this.maxProfiles) throw new StoreFullError('This server has reached its profile limit');
     const editKey = randomBytes(18).toString('base64url');
     const now = new Date().toISOString();
     const insert = this.db.prepare(
@@ -56,7 +67,18 @@ export class Store {
       .run(JSON.stringify(profile), new Date().toISOString(), code);
   }
 
+  delete(code) {
+    this.db.prepare('DELETE FROM profiles WHERE code = ?').run(code);
+  }
+
   countLoad(code) {
-    this.db.prepare('UPDATE profiles SET loads = loads + 1 WHERE code = ?').run(code);
+    this.db.prepare('UPDATE profiles SET loads = loads + 1, loaded_at = ? WHERE code = ?').run(new Date().toISOString(), code);
+  }
+
+  // Deletes profiles neither saved nor loaded for `days` days. Returns how many.
+  prune(days) {
+    const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+    return Number(this.db.prepare('DELETE FROM profiles WHERE updated_at < ? AND (loaded_at IS NULL OR loaded_at < ?)')
+      .run(cutoff, cutoff).changes);
   }
 }

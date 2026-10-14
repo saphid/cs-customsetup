@@ -5,8 +5,20 @@ import { normalizeProfile, ValidationError } from '../server/profile.mjs';
 import { buildCfg, stationBundle } from '../server/cfg.mjs';
 import { Store } from '../server/store.mjs';
 import { createApp } from '../server/server.mjs';
+import { Signer } from '../server/signing.mjs';
+import { checkBindCommand } from '../web/rules.js';
+import { createPublicKey, verify } from 'node:crypto';
 import { importConfig } from '../web/importer.js';
 import { connect } from 'node:net';
+
+// The PowerShell the launcher runs (it is passed as -EncodedCommand).
+const launcherScript = (cmd) => Buffer.from(cmd.match(/-EncodedCommand (\S+)/)[1], 'base64').toString('utf16le');
+const signedBy = (signer, bytes, sig) => verify('sha256', bytes, createPublicKey(signer.key), Buffer.from(sig, 'base64'));
+const getRaw = (port, path, headers = {}) => new Promise((resolve, reject) => {
+  http.get({ port, path, headers }, (r) => {
+    const chunks = []; r.on('data', (d) => chunks.push(d)); r.on('end', () => resolve({ status: r.statusCode, headers: r.headers, body: Buffer.concat(chunks) }));
+  }).on('error', reject);
+});
 
 test('empty profile gets CS2 defaults', () => {
   const p = normalizeProfile({});
@@ -146,13 +158,14 @@ test('import reads autoexec lines, vcfg pairs, legacy crosshair values and share
   assert.equal(state.extraCfg, 'snd_mute_losefocus "0"');
   assert.equal(extra, 1);
   assert.equal(skipped, 4, 'nested bind, exec, writekeybindings, sv_cheats');
-  assert.equal(notes.length, 2, "legacy sizes converted; fov adjusted");
+  assert.equal(notes.length, 3, 'legacy sizes converted; fov adjusted; nested bind refused');
+  assert.ok(notes.some((n) => n.startsWith('Binds not imported: f')));
   assert.equal(applied, 10);
   assert.doesNotThrow(() => normalizeProfile(state), 'imported state must save');
 });
 
 test('a malformed request target gets 400 and the server keeps running', async () => {
-  const server = createApp({ store: new Store(':memory:') }).listen(0);
+  const server = createApp({ store: new Store(':memory:'), lanHost: () => null }).listen(0);
   const port = server.address().port;
   try {
     const reply = await new Promise((resolve, reject) => {
@@ -167,7 +180,7 @@ test('a malformed request target gets 400 and the server keeps running', async (
 
 test('creation limit is per client, using X-Forwarded-For only when trusted', async () => {
   for (const trustProxy of [false, true]) {
-    const server = createApp({ store: new Store(':memory:'), trustProxy, createLimit: 2 }).listen(0);
+    const server = createApp({ store: new Store(':memory:'), lanHost: () => null, trustProxy, createLimit: 2 }).listen(0);
     const base = `http://127.0.0.1:${server.address().port}`;
     const post = (ip) => fetch(`${base}/api/profiles`, { method: 'POST', body: '{}', headers: { 'X-Forwarded-For': ip } }).then((r) => r.status);
     try {
@@ -178,7 +191,7 @@ test('creation limit is per client, using X-Forwarded-For only when trusted', as
 });
 
 test('API: create, load, edit with key, cfg, QR, station bundle', async () => {
-  const server = createApp({ store: new Store(':memory:') }).listen(0);
+  const server = createApp({ store: new Store(':memory:'), lanHost: () => null }).listen(0);
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
     const created = await fetch(`${base}/api/profiles`, { method: 'POST', body: JSON.stringify({ name: 'Ace', mouse: { sensitivity: 2 } }) });
@@ -207,18 +220,15 @@ test('API: create, load, edit with key, cfg, QR, station bundle', async () => {
     assert.equal((await bad.json()).field, 'mouse.sensitivity');
 
     const script = await (await fetch(`${base}/station.ps1`)).text();
-    assert.match(script, /^# LOADOUT-END/m, 'end marker the launcher checks');
-    assert.ok(script.includes(`[string]$Server = '${base.replace('127.0.0.1', '127.0.0.1')}'`));
+    assert.ok(script.includes(`[string]$Server = '${base}'`));
+    assert.ok(script.includes('<RSAKeyValue><Modulus>'), 'public key baked in');
     const cmd = await (await fetch(`${base}/station.cmd`)).text();
-    assert.ok(cmd.includes(`Invoke-WebRequest '${base}/station.ps1'`));
     assert.ok(cmd.split('\r\n').length > 5);
+    assert.ok(launcherScript(cmd).includes(`Invoke-WebRequest '${base}/station.ps1'`));
+    assert.ok(launcherScript(cmd).includes("VerifyData($bytes, 'SHA256'"));
     // fetch() always sends the URL's host, so send a hostile Host header with node:http.
-    const odd = await new Promise((resolve, reject) => {
-      http.get({ port: server.address().port, path: '/station.cmd', headers: { Host: 'evil"&calc&%x%^|:1' } }, (r) => {
-        let body = ''; r.on('data', (d) => { body += d; }); r.on('end', () => resolve(body));
-      }).on('error', reject);
-    });
-    assert.ok(odd.includes("Invoke-WebRequest 'http://evilcalcx:1/station.ps1'"), odd);
+    const odd = (await getRaw(server.address().port, '/station.cmd', { Host: 'evil"&calc&%x%^|:1' })).body.toString();
+    assert.ok(launcherScript(odd).includes("Invoke-WebRequest 'http://evilcalcx:1/station.ps1'"), odd);
     assert.ok(!/[&|^%"]calc/.test(odd));
     assert.equal((await fetch(`${base}/../package.json`)).status, 404);
   } finally {
@@ -269,7 +279,7 @@ test('sensitivity is converted to the station mouse DPI, keeping eDPI', async ()
   const floor = stationBundle(normalizeProfile({ mouse: { dpi: 400, sensitivity: 0.0001 } }), '123456', { stationDpi: 800 });
   assert.equal(floor.warnings.length, 1, 'clamped at the minimum is reported');
 
-  const server = createApp({ store: new Store(':memory:') }).listen(0);
+  const server = createApp({ store: new Store(':memory:'), lanHost: () => null }).listen(0);
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
     const { code } = await (await fetch(`${base}/api/profiles`, { method: 'POST', body: JSON.stringify({ mouse: { dpi: 1600, sensitivity: 0.5 } }) })).json();
@@ -312,12 +322,116 @@ test('stored profiles that fail current rules are not served as cfg or station b
 });
 
 test('PUBLIC_URL with a trailing slash still gives working station links', async () => {
-  const server = createApp({ store: new Store(':memory:'), publicUrl: 'http://lan.example:8080/' }).listen(0);
+  const server = createApp({ store: new Store(':memory:'), lanHost: () => null, publicUrl: 'http://lan.example:8080/' }).listen(0);
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
-    assert.ok((await (await fetch(`${base}/station.cmd`)).text()).includes("'http://lan.example:8080/station.ps1'"));
+    assert.ok(launcherScript(await (await fetch(`${base}/station.cmd`)).text()).includes("'http://lan.example:8080/station.ps1'"));
     assert.ok((await (await fetch(`${base}/station.ps1`)).text()).includes("'http://lan.example:8080'"));
   } finally {
     server.close();
   }
+});
+
+test('binds: one held action, no release commands, only real actions', () => {
+  for (const ok of ['+jump', 'slot7', '+lookatweapon; cl_showfps 1', 'toggle cl_radar_scale 0.4 1', 'say gg', 'drop']) {
+    assert.equal(checkBindCommand(ok), null, ok);
+  }
+  for (const bad of ['+jump;-attack;-attack2', '+forward;-back', '+foo', '+jump;+duck', '-attack']) {
+    assert.ok(checkBindCommand(bad), bad);
+  }
+  assert.throws(() => normalizeProfile({ extraCfg: 'bind "mouse5" "+jump;-attack"' }), ValidationError);
+});
+
+test('import reads CS2 key files, crosshair scale, display mode and FPS mode', () => {
+  const state = normalizeProfile({});
+  const { notes } = importConfig(`"config"
+{
+	"bindings"
+	{
+		"w"		"+forward"
+		"MOUSE4"		"+voicerecord"
+		"scancode26"		"slot8"
+		"g"		"<unbound>"
+		"mouse5"		"+jump;-attack"
+	}
+	"convars"
+	{
+		"cl_crosshair_length"		"4"
+		"cl_crosshair_screen_height"		"720"
+		"cl_showfps"		"3"
+		"cl_crosshairgap"		"-1"
+	}
+}
+"video.cfg"
+{
+	"setting.fullscreen"		"0"
+	"setting.nowindowborder"		"1"
+	"setting.refreshrate_numerator"		"239760"
+	"setting.refreshrate_denominator"		"1000"
+	"setting.shaderquality"		"1"
+}`, state);
+  assert.deepEqual(state.binds, [{ key: 'mouse4', command: '+voicerecord' }, { key: 'scancode26', command: 'slot8' }], 'defaults skipped');
+  assert.equal(state.extraCfg, 'unbind "g"');
+  assert.equal(state.crosshair.length, 6, '4 px at 720p = 6 px at 1080p');
+  assert.equal(state.misc.showFps, 3);
+  assert.equal(state.video.mode, 'borderless');
+  assert.equal(state.video.refreshRate, 240);
+  for (const text of ['old crosshair gap', 'Binds not imported: mouse5', '720p', 'graphics quality']) {
+    assert.ok(notes.some((n) => n.includes(text)), text);
+  }
+  assert.doesNotThrow(() => normalizeProfile(state));
+  assert.equal(normalizeProfile({ misc: { showFps: true } }).misc.showFps, 1, 'older true/false saves');
+});
+
+test('station script and bundles are signed; edit keys are verified; owners can delete', async () => {
+  const signer = new Signer();
+  const server = createApp({ store: new Store(':memory:'), lanHost: () => null, signer }).listen(0);
+  const port = server.address().port, base = `http://127.0.0.1:${port}`;
+  try {
+    const { code, editKey } = await (await fetch(`${base}/api/profiles`, { method: 'POST', body: '{"name":"Sig"}' })).json();
+    for (const path of ['/station.ps1', `/api/profiles/${code}/station?dpi=800`]) {
+      const r = await getRaw(port, path);
+      assert.ok(signedBy(signer, r.body, r.headers['x-loadout-signature']), path);
+      assert.ok(!signedBy(signer, Buffer.concat([r.body, Buffer.from(' ')]), r.headers['x-loadout-signature']), 'tampering detected');
+    }
+    assert.ok((await getRaw(port, '/station.ps1')).body.toString().includes(signer.publicXml));
+    assert.match(signer.fingerprint, /^[0-9A-F]{4}(-[0-9A-F]{4}){3}$/);
+    assert.equal((await (await fetch(`${base}/api/info`)).json()).fingerprint, signer.fingerprint);
+
+    const check = (key) => fetch(`${base}/api/profiles/${code}/verify`, { method: 'POST', headers: { 'X-Edit-Key': key } }).then((r) => r.status);
+    assert.equal(await check(editKey), 200);
+    assert.equal(await check('bogus'), 403);
+    const del = (key) => fetch(`${base}/api/profiles/${code}`, { method: 'DELETE', headers: { 'X-Edit-Key': key } }).then((r) => r.status);
+    assert.equal(await del('bogus'), 403);
+    assert.equal(await del(editKey), 204);
+    assert.equal((await fetch(`${base}/api/profiles/${code}`)).status, 404);
+  } finally { server.close(); }
+});
+
+test('links handed to other devices never point at localhost', async () => {
+  const server = createApp({ store: new Store(':memory:'), lanHost: () => '192.168.5.20' }).listen(0);
+  const port = server.address().port;
+  try {
+    const info = JSON.parse((await getRaw(port, '/api/info', { Host: `localhost:${port}` })).body);
+    assert.equal(info.url, `http://192.168.5.20:${port}`);
+    assert.equal(info.reachable, true);
+    const script = (await getRaw(port, '/station.ps1', { Host: `127.0.0.1:${port}` })).body.toString();
+    assert.ok(script.includes(`'http://192.168.5.20:${port}'`));
+  } finally { server.close(); }
+});
+
+test('reads are rate limited; the store has a size cap and retention', async () => {
+  const server = createApp({ store: new Store(':memory:'), lanHost: () => null, readLimit: 3 }).listen(0);
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const statuses = [];
+    for (let i = 0; i < 4; i++) statuses.push((await fetch(`${base}/api/profiles/123456`)).status);
+    assert.deepEqual(statuses, [404, 404, 404, 429]);
+  } finally { server.close(); }
+  const store = new Store(':memory:', { maxProfiles: 1 });
+  store.create(normalizeProfile({}));
+  assert.throws(() => store.create(normalizeProfile({})), /limit/);
+  store.db.exec("UPDATE profiles SET updated_at = '2020-01-01T00:00:00.000Z'");
+  assert.equal(store.prune(30), 1);
+  assert.equal(store.count(), 0);
 });

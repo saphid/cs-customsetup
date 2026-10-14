@@ -8,6 +8,13 @@ Loadout station. Type a 6-digit code, get your CS2 setup on this PC.
   Loadout.ps1 -Launch              Start CS2 with the loaded profile
   Loadout.ps1 -MouseDpi 800        This PC's mouse DPI (remembered); sensitivity
                                    is converted so each player's eDPI stays the same
+  Loadout.ps1 -Check               Admin: is this PC ready? (exit code 2 when not)
+  Loadout.ps1 -ConfirmCloudOff     Admin: record that Steam Cloud is off for CS2
+  Loadout.ps1 -Prefetch 123456,234567
+                                   Admin: cache these setups so they load even if
+                                   the server goes down
+
+Downloads are checked against the server's signing key, baked in below.
 
 The first load saves the station's original files and mouse settings under
 %LOCALAPPDATA%\CSSetup\baseline. Reset restores that baseline, so every
@@ -22,15 +29,22 @@ param(
     [string]$Server = '__SERVER_URL__',
     [string]$SteamRoot,
     [ValidateScript({ $_ -eq 0 -or ($_ -ge 50 -and $_ -le 32000) })][int]$MouseDpi = 0,
-    [switch]$Windowed
+    [switch]$Windowed,
+    [switch]$Check,
+    [switch]$ConfirmCloudOff,
+    [string[]]$Prefetch,
+    [string]$SigningKey = '__SIGNING_KEY__',
+    [string]$KeyFingerprint = '__SIGNING_FP__'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$StateDir = Join-Path $env:LOCALAPPDATA 'CSSetup'
+# LOADOUT_STATE_DIR is for tests, so they never touch a real station's baseline.
+$StateDir = if ($env:LOADOUT_STATE_DIR) { $env:LOADOUT_STATE_DIR } else { Join-Path $env:LOCALAPPDATA 'CSSetup' }
 $Baseline = Join-Path $StateDir 'baseline'
+$CacheDir = Join-Path $StateDir 'cache'
 $CfgName = 'cssetup'
 $CsFolder = 'steamapps\common\Counter-Strike Global Offensive'
 
@@ -38,21 +52,44 @@ $CsFolder = 'steamapps\common\Counter-Strike Global Offensive'
 # file is reported and ignored, so it can never block a reset.
 $StationFile = Join-Path $StateDir 'station.json'
 $StationDpi = 0
+$CloudOffConfirmed = $false
 $StationWarning = $null
-if ($MouseDpi -gt 0) {
-    New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
-    @{ mouseDpi = $MouseDpi } | ConvertTo-Json | Set-Content $StationFile -Encoding UTF8
-    $StationDpi = $MouseDpi
-} elseif (Test-Path $StationFile) {
+if (Test-Path $StationFile) {
     try {
         $saved = Get-Content $StationFile -Raw | ConvertFrom-Json
         $value = 0
         if ($saved -and $saved.PSObject.Properties['mouseDpi'] -and [int]::TryParse([string]$saved.mouseDpi, [ref]$value) -and $value -ge 50 -and $value -le 32000) {
             $StationDpi = $value
-        } else { $StationWarning = "Ignoring $StationFile`: no valid mouseDpi. Run with -MouseDpi to set it." }
+        } elseif ($MouseDpi -eq 0) { $StationWarning = "Ignoring $StationFile`: no valid mouseDpi. Run with -MouseDpi to set it." }
+        if ($saved -and $saved.PSObject.Properties['cloudOffConfirmed']) { $CloudOffConfirmed = [bool]$saved.cloudOffConfirmed }
     } catch { $StationWarning = "Ignoring $StationFile`: $($_.Exception.Message)" }
 }
+if ($MouseDpi -gt 0) { $StationDpi = $MouseDpi }
+if ($ConfirmCloudOff) { $CloudOffConfirmed = $true }
+if ($MouseDpi -gt 0 -or $ConfirmCloudOff) {
+    New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+    @{ mouseDpi = $StationDpi; cloudOffConfirmed = $CloudOffConfirmed } | ConvertTo-Json | Set-Content $StationFile -Encoding UTF8
+}
 if ($StationWarning) { [Console]::Error.WriteLine("Loadout: $StationWarning") }
+
+# One station action at a time across windows and command lines on this PC.
+$StationMutex = New-Object Threading.Mutex($false, 'Local\LoadoutStation')
+function Enter-Station([int]$waitMs) {
+    try { return $StationMutex.WaitOne($waitMs) } catch [Threading.AbandonedMutexException] { return $true }
+}
+
+# ---------------------------------------------------------------- signatures
+
+# True when $signature (base64) is the server's RSA-SHA256 signature of $bytes.
+function Test-Signature([byte[]]$bytes, [string]$signature) {
+    if ($SigningKey -notlike '<RSAKeyValue>*') { throw 'This copy of the station has no signing key. Download Loadout.cmd from the Loadout server.' }
+    if (-not $signature) { return $false }
+    $rsa = New-Object Security.Cryptography.RSACryptoServiceProvider
+    try {
+        $rsa.FromXmlString($SigningKey)
+        return $rsa.VerifyData($bytes, 'SHA256', [Convert]::FromBase64String($signature))
+    } catch { return $false } finally { $rsa.Dispose() }
+}
 
 Add-Type -Namespace CSSetup -Name Native -MemberDefinition @'
 [DllImport("user32.dll", SetLastError = true)]
@@ -164,8 +201,10 @@ function Update-Baseline([string]$steam, $game, [string[]]$userCfgs) {
         }
         $files += [pscustomobject]@{ path = $path; copy = $copy }
     }
+    # Written to a temporary file first, so a crash never leaves half a manifest.
     [pscustomobject]@{ created = (Get-Date).ToString('o'); steamRoot = $steam; mouse = Get-WindowsMouse; files = $files } |
-        ConvertTo-Json -Depth 5 | Set-Content $BaselineFile -Encoding UTF8
+        ConvertTo-Json -Depth 5 | Set-Content "$BaselineFile.tmp" -Encoding UTF8
+    Move-Item "$BaselineFile.tmp" $BaselineFile -Force
     return $true
 }
 
@@ -233,18 +272,55 @@ function Restore-Baseline {
 
 # ---------------------------------------------------------------- apply
 
+# Setups this PC has loaded or prefetched, kept signed, so a load still works
+# while the server is down.
+function Save-CachedBundle([string]$code, [byte[]]$bytes, [string]$signature) {
+    New-Item -ItemType Directory -Force -Path $CacheDir | Out-Null
+    [pscustomobject]@{ saved = (Get-Date).ToString('o'); dpi = $StationDpi; signature = $signature; body = [Convert]::ToBase64String($bytes) } |
+        ConvertTo-Json | Set-Content (Join-Path $CacheDir "$code.json") -Encoding UTF8
+}
+
+function Read-CachedBundle([string]$code) {
+    $file = Join-Path $CacheDir "$code.json"
+    if (-not (Test-Path $file)) { return $null }
+    try {
+        $entry = Get-Content $file -Raw | ConvertFrom-Json
+        $bytes = [Convert]::FromBase64String($entry.body)
+        if (-not (Test-Signature $bytes $entry.signature)) { return $null }
+        $bundle = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
+        $note = "! The server is unreachable: loaded the copy of this setup saved on this PC at $(([datetime]$entry.saved).ToString('HH:mm, d MMM')). Changes made after that are missing."
+        if ([int]$entry.dpi -ne $StationDpi) { $note += ' It was converted for a different mouse DPI; ask the admin.' }
+        $bundle | Add-Member -NotePropertyName cachedNote -NotePropertyValue $note
+        return $bundle
+    } catch { return $null }
+}
+
+# Downloads a setup and checks its signature. Falls back to the cache only
+# when the server cannot be reached (never for an unknown or outdated code).
 function Get-Bundle([string]$code) {
     if ($code -notmatch '^\d{6}$') { throw 'Codes are 6 digits.' }
+    $query = if ($StationDpi -gt 0) { "?dpi=$StationDpi" } else { '' }
     try {
-        $query = if ($StationDpi -gt 0) { "?dpi=$StationDpi" } else { '' }
-        Invoke-RestMethod -Uri "$($Server.TrimEnd('/'))/api/profiles/$code/station$query" -TimeoutSec 15 -UseBasicParsing
+        $r = Invoke-WebRequest -Uri "$($Server.TrimEnd('/'))/api/profiles/$code/station$query" -TimeoutSec 15 -UseBasicParsing
     } catch {
         $status = $null
         if ($_.Exception.PSObject.Properties['Response'] -and $_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
         if ($status -eq 404) { throw "No setup found for code $code. Check the number on your phone." }
         if ($status -eq 409) { throw "Setup $code was saved by an older version. Open it on your phone and save it again." }
-        throw "Could not reach the Loadout server at $Server."
+        if ($status -eq 429) { throw 'The server is busy. Wait a minute and try again.' }
+        $cached = Read-CachedBundle $code
+        if ($cached) { return $cached }
+        throw "Could not reach the Loadout server at $Server. Ask the admin."
     }
+    $bytes = $r.RawContentStream.ToArray()
+    $signature = [string]$r.Headers['X-Loadout-Signature']
+    if (-not (Test-Signature $bytes $signature)) {
+        throw "The setup from $Server failed its signature check, so it was not applied. Admin: download Loadout.cmd again from the server's admin page."
+    }
+    $bundle = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
+    if ($bundle.PSObject.Properties['game'] -and $bundle.game -ne 'cs2') { throw "Setup $code is for $($bundle.game), not Counter-Strike 2." }
+    try { Save-CachedBundle $code $bytes $signature } catch { }
+    return $bundle
 }
 
 function Set-VideoSettings([string]$path, $values) {
@@ -304,6 +380,7 @@ function Invoke-Apply([string]$code, [scriptblock]$report) {
         try { [void](Restore-Station) } catch { $problem += " (and restoring the station failed: $($_.Exception.Message))" }
         throw "Load failed, station settings restored: $problem"
     }
+    if ($bundle.PSObject.Properties['cachedNote']) { & $report $bundle.cachedNote }
     foreach ($warning in @($bundle.warnings)) { & $report "! $warning" }
     foreach ($note in @($bundle.notes)) { & $report "i $note" }
     return $bundle
@@ -316,10 +393,87 @@ function Start-Cs2 {
     Start-Process $steamExe -ArgumentList '-applaunch', '730', '+exec', $CfgName
 }
 
+# ---------------------------------------------------------------- readiness
+
+# Steam keeps the per-game cloud switch in each account's sharedconfig.vdf
+# (Apps > 730 > cloudenabled). Returns 'off', 'on' or 'unknown'.
+function Get-Cs2CloudSetting([string]$steam) {
+    $states = @(Get-ChildItem (Join-Path $steam 'userdata') -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $vdf = Join-Path $_.FullName '7\remote\sharedconfig.vdf'
+        if (Test-Path $vdf) {
+            $m = [regex]::Match((Get-Content $vdf -Raw), '"730"\s*\{(?:[^{}]|\{[^{}]*\})*?"cloudenabled"\s*"(\d)"', 'IgnoreCase')
+            if ($m.Success) { if ($m.Groups[1].Value -eq '0') { 'off' } else { 'on' } } else { 'unknown' }
+        }
+    })
+    if ($states -contains 'on') { return 'on' }
+    if ($states.Count -and -not ($states -contains 'unknown')) { return 'off' }
+    return 'unknown'
+}
+
+# Everything an admin should know before players arrive. Each item: status
+# (OK, WARN, FAIL), what was checked, and what to do.
+function Get-Readiness {
+    $items = New-Object System.Collections.ArrayList
+    function Add([string]$status, [string]$item, [string]$detail) { [void]$items.Add([pscustomobject]@{ status = $status; item = $item; detail = $detail }) }
+    if ($SigningKey -like '<RSAKeyValue>*') { Add 'OK' 'Station app' "downloaded from $Server (key $KeyFingerprint)" }
+    else { Add 'FAIL' 'Station app' 'not downloaded from a Loadout server: get Loadout.cmd from the admin page' }
+    try { Invoke-WebRequest "$($Server.TrimEnd('/'))/api/health" -UseBasicParsing -TimeoutSec 5 | Out-Null; Add 'OK' 'Server' "reachable at $Server" }
+    catch { Add 'WARN' 'Server' "unreachable at $Server; only setups cached on this PC will load" }
+    if ($StationDpi -gt 0) { Add 'OK' 'Mouse DPI' "$StationDpi DPI; players' sensitivity is converted" }
+    else { Add 'FAIL' 'Mouse DPI' 'not set: run Loadout.cmd -MouseDpi <the DPI every station mouse uses>' }
+    $steam = $null
+    try { $steam = Get-SteamRoot; Add 'OK' 'Steam' $steam } catch { Add 'FAIL' 'Steam' $_.Exception.Message }
+    if ($steam) {
+        try { $game = Get-Cs2Folder $steam; Add 'OK' 'Counter-Strike 2' $game } catch { Add 'FAIL' 'Counter-Strike 2' $_.Exception.Message }
+        $active = (Get-ItemProperty 'HKCU:\Software\Valve\Steam\ActiveProcess' -ErrorAction SilentlyContinue)
+        if ($active -and $active.PSObject.Properties['ActiveUser'] -and $active.ActiveUser) { Add 'OK' 'Steam account' 'signed in' }
+        else { Add 'WARN' 'Steam account' 'Steam is not running or nobody is signed in: sign in to the station account' }
+        $videos = @(Get-UserCfgFolders $steam | ForEach-Object { Join-Path $_ 'cs2_video.txt' } | Where-Object { Test-Path $_ })
+        if ($videos.Count) { Add 'OK' 'CS2 first run' 'video settings file found, so resolutions can be set' }
+        else { Add 'FAIL' 'CS2 first run' 'start CS2 once on the station account and quit, so players get their resolution' }
+        $cloud = Get-Cs2CloudSetting $steam
+        if ($cloud -eq 'off' -or $CloudOffConfirmed) { Add 'OK' 'Steam Cloud for CS2' $(if ($cloud -eq 'off') { 'off' } else { 'confirmed off by the admin' }) }
+        elseif ($cloud -eq 'on') { Add 'FAIL' 'Steam Cloud for CS2' 'on: turn it off (Steam > CS2 > Properties > General), or reset leaves the last player''s settings in the cloud' }
+        else { Add 'WARN' 'Steam Cloud for CS2' 'could not tell: turn it off in Steam > CS2 > Properties > General, then run Loadout.cmd -ConfirmCloudOff' }
+    }
+    try {
+        New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+        $probe = Join-Path $StateDir 'write.test'; Set-Content $probe 'ok'; Remove-Item $probe
+        Add 'OK' 'Station folder' $StateDir
+    } catch { Add 'FAIL' 'Station folder' "cannot write $StateDir" }
+    if (Test-Path (Join-Path $StateDir 'current.json')) { Add 'WARN' 'Current player' "a player's setup is loaded: press Reset before the next player" }
+    elseif (Read-Baseline) { Add 'OK' 'Baseline' 'saved' }
+    else { Add 'OK' 'Baseline' 'saved automatically at the first load (or run -SaveBaseline now)' }
+    if (Test-Cs2Running) { Add 'WARN' 'CS2' 'running: players must close it before loading a code' }
+    $cached = @(Get-ChildItem $CacheDir -Filter '*.json' -ErrorAction SilentlyContinue).Count
+    Add 'OK' 'Offline cache' "$cached setup(s) cached on this PC"
+    return ,$items
+}
+
+function Invoke-Prefetch([string[]]$codes) {
+    $list = @($codes | ForEach-Object { $_ -split '[,\s]+' } | Where-Object { $_ })
+    if ($list.Count -eq 1 -and (Test-Path $list[0])) { $list = @((Get-Content $list[0]) -split '[,\s]+' | Where-Object { $_ }) }
+    $ok = 0; $failed = @()
+    foreach ($c in $list) {
+        try { [void](Get-Bundle $c); $ok++ } catch { $failed += "$c ($($_.Exception.Message))" }
+    }
+    "Cached $ok setup(s) on this PC." + $(if ($failed) { " Not cached: $($failed -join '; ')" } else { '' })
+}
+
 # ---------------------------------------------------------------- command line
 
-if ($Reset -or $SaveBaseline -or $Code -or $Launch) {
+if ($Check) {
+    $report = Get-Readiness
+    foreach ($i in $report) { '{0,-5} {1}: {2}' -f $i.status, $i.item, $i.detail }
+    try { $report | ConvertTo-Json | Set-Content (Join-Path $StateDir 'readiness.json') -Encoding UTF8 } catch { }
+    if (@($report | Where-Object { $_.status -eq 'FAIL' }).Count) { exit 2 }
+    exit 0
+}
+
+if ($Reset -or $SaveBaseline -or $Code -or $Launch -or $Prefetch) {
     try {
+        if ($Prefetch) { Invoke-Prefetch $Prefetch }
+        if (($Reset -or $SaveBaseline -or $Code) -and -not (Enter-Station 30000)) { throw 'Another Loadout window or command is busy on this PC. Try again in a moment.' }
         if ($Reset) { Restore-Baseline }
         elseif ($SaveBaseline) { Save-StationBaseline }
         elseif ($Code) { Invoke-Apply $Code | Out-Null }
@@ -330,10 +484,18 @@ if ($Reset -or $SaveBaseline -or $Code -or $Launch) {
     }
     return
 }
+if ($MouseDpi -gt 0 -or $ConfirmCloudOff) {
+    if ($MouseDpi -gt 0) { "Saved: this PC's mouse runs at $MouseDpi DPI." }
+    if ($ConfirmCloudOff) { 'Saved: Steam Cloud is off for CS2 on this PC.' }
+}
 
 # ---------------------------------------------------------------- window
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+if (-not (Enter-Station 0)) {
+    [void][Windows.MessageBox]::Show('Loadout is already open on this PC.', 'Loadout')
+    exit 0
+}
 [xml]$xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -371,6 +533,9 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
       <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
     <DockPanel Grid.Row="0">
+      <Border x:Name="ReadyBanner" DockPanel.Dock="Bottom" Background="#3A2A0A" BorderBrush="#F5A524" BorderThickness="1" CornerRadius="8" Padding="14,8" Margin="0,14,0,0" Visibility="Collapsed">
+        <TextBlock x:Name="ReadyText" Foreground="#F5C46B" FontSize="14" TextWrapping="Wrap"/>
+      </Border>
       <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
         <Border Width="14" Height="14" CornerRadius="3" Background="#F5A524" Margin="0,0,12,0"/>
         <TextBlock Text="LOADOUT" FontSize="18" FontWeight="Bold" Foreground="#E8ECF2"/>
@@ -420,7 +585,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 '@
 $window = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
 $ui = @{}
-foreach ($name in 'CodeBox', 'CodeBorder', 'LoadButton', 'LaunchButton', 'ResetButton', 'ErrorText', 'PlayerText', 'PlayerSub', 'StepList', 'ServerText') {
+foreach ($name in 'CodeBox', 'CodeBorder', 'LoadButton', 'LaunchButton', 'ResetButton', 'ErrorText', 'PlayerText', 'PlayerSub', 'StepList', 'ServerText', 'ReadyBanner', 'ReadyText') {
     $ui[$name] = $window.FindName($name)
 }
 $steps = New-Object System.Collections.ObjectModel.ObservableCollection[object]
@@ -431,7 +596,15 @@ function Add-Step([string]$message) {
     $steps.Add([pscustomobject]@{ Icon = [string]$icon; Color = $color; Text = $message })
 }
 $ui.StepList.ItemsSource = $steps
-$ui.ServerText.Text = if ($StationDpi -gt 0) { "$Server   -   mouse $StationDpi DPI" } else { $Server }
+$ui.ServerText.Text = "$Server   -   key $KeyFingerprint" + $(if ($StationDpi -gt 0) { "   -   mouse $StationDpi DPI" } else { '' })
+# Admin hint when the PC is not ready (shown to players too, so staff notice).
+try {
+    $problems = @(Get-Readiness | Where-Object { $_.status -eq 'FAIL' } | ForEach-Object { "$($_.item): $($_.detail)" })
+    if ($problems.Count) {
+        $ui.ReadyText.Text = "Station not ready (admin): " + ($problems -join '   |   ')
+        $ui.ReadyBanner.Visibility = 'Visible'
+    }
+} catch { }
 if (-not $Windowed) { $window.WindowState = 'Maximized' }
 
 function Update-Ui { $window.Dispatcher.Invoke([Action]{}, 'Background') }
@@ -490,5 +663,3 @@ $ui.ResetButton.Add_Click({
 })
 $window.Add_ContentRendered({ $ui.CodeBox.Focus() | Out-Null })
 [void]$window.ShowDialog()
-# LOADOUT-END: the Loadout.cmd launcher checks for this line to detect a complete download.
-# CS-SETUP-END: the marker launchers downloaded before the rename look for.

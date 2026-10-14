@@ -6,6 +6,8 @@
 param([string]$Server = 'http://10.0.2.2:18431', [string]$CodeA, [string]$CodeB)
 $ErrorActionPreference = 'Stop'
 $root = 'C:\CSSetupTest'
+# The station keeps its state here instead of %LOCALAPPDATA%\CSSetup, so a real station's baseline is never touched.
+$env:LOADOUT_STATE_DIR = Join-Path $root 'state'
 $steam = Join-Path $root 'Steam'
 $game = Join-Path $steam 'steamapps\common\Counter-Strike Global Offensive'
 $cfgDir = Join-Path $game 'game\csgo\cfg'
@@ -32,7 +34,6 @@ $video = "`"video.cfg`"`n{`n`t`"Version`"`t`t`"16`"`n`t`"setting.defaultres`"`t`
 
 function New-Station([switch]$NoAccounts, [switch]$EmptyAutoexec) {
     if (Test-Path $root) { Get-ChildItem $root -Recurse -File | ForEach-Object { $_.IsReadOnly = $false }; Remove-Item $root -Recurse -Force }
-    Remove-Item (Join-Path $env:LOCALAPPDATA 'CSSetup') -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $cfgDir | Out-Null
     [IO.File]::WriteAllText((Join-Path $steam 'steamapps\libraryfolders.vdf'), "`"libraryfolders`"`n{`n`t`"0`"`n`t{`n`t`t`"path`"`t`t`"$($steam -replace '\\','\\')`"`n`t}`n}`n")
     if ($EmptyAutoexec) { [IO.File]::WriteAllText((Join-Path $cfgDir 'autoexec.cfg'), '') }
@@ -53,6 +54,7 @@ function Station([string[]]$arguments) {
 }
 
 $guestMouse = Mouse
+try {
 New-Station
 Invoke-WebRequest "$Server/station.ps1" -OutFile $script -UseBasicParsing
 Check 'download' ((Read $script) -match [regex]::Escape("'$Server'")) 'server URL baked in'
@@ -93,7 +95,23 @@ $r = Station @('-Code', $CodeA, '-MouseDpi', '800')
 Check 'station DPI: sensitivity converted' ($r.code -eq 0 -and (Read (Join-Path $cfgDir 'cssetup.cfg')) -match '(?m)^sensitivity "0.45"') $r.text
 $r = Station @('-Code', $CodeA)
 Check 'station DPI: remembered on the next load' ((Read (Join-Path $cfgDir 'cssetup.cfg')) -match '(?m)^sensitivity "0.45"') $r.text
-Remove-Item (Join-Path $env:LOCALAPPDATA 'CSSetup\station.json')
+
+# Signatures: a station with a different key refuses the server's setup and changes nothing.
+$otherKey = (New-Object Security.Cryptography.RSACryptoServiceProvider 2048).ToXmlString($false)
+$before = Read (Join-Path $cfgDir 'cssetup.cfg')
+$r = Station @('-Code', $CodeB, '-SigningKey', $otherKey)
+Check 'signature: setup from another key refused' ($r.code -eq 1 -and $r.text -match 'signature check' -and (Read (Join-Path $cfgDir 'cssetup.cfg')) -eq $before) $r.text
+
+# Server down: a setup this PC loaded before still loads from the signed cache.
+$r = Station @('-Code', $CodeA, '-Server', 'http://127.0.0.1:9')
+Check 'offline: cached setup loads with a warning' ($r.code -eq 0 -and $r.text -match 'server is unreachable' -and (Read (Join-Path $cfgDir 'cssetup.cfg')) -match '(?m)^sensitivity "0.45"') $r.text
+$r = Station @('-Code', $CodeB, '-Server', 'http://127.0.0.1:9')
+Check 'offline: uncached setup fails cleanly' ($r.code -eq 1 -and $r.text -match 'Could not reach') $r.text
+
+# Admin readiness report.
+$r = Station @('-Check')
+Check 'check: readiness report' (($r.code -eq 0 -or $r.code -eq 2) -and $r.text -match 'Mouse DPI' -and $r.text -match 'Steam Cloud for CS2' -and $r.text -match 'OK\s+Station app') $r.text
+Remove-Item (Join-Path $env:LOADOUT_STATE_DIR 'station.json')
 
 # An account folder that appears after the baseline belongs to a player: cleared
 New-Item -ItemType Directory -Force $userCfg2 | Out-Null
@@ -123,7 +141,7 @@ Check 'second reset is a no-op' ($r.text -match 'Nothing to reset') $r.text
 
 # A baseline written by the previous version (userCfgs, no steamRoot) still resets
 $r = Station @('-Code', $CodeA)
-$bf = Join-Path $env:LOCALAPPDATA 'CSSetup\baseline\baseline.json'
+$bf = Join-Path $env:LOADOUT_STATE_DIR 'baseline\baseline.json'
 $old = Get-Content $bf -Raw | ConvertFrom-Json
 [pscustomobject]@{ created = $old.created; mouse = $old.mouse; files = $old.files; userCfgs = @($userCfg) } | ConvertTo-Json -Depth 5 | Set-Content $bf -Encoding UTF8
 New-Item -ItemType Directory -Force $userCfg2 | Out-Null
@@ -134,10 +152,10 @@ Check 'old baseline format: new account folder cleared' (-not (Test-Path (Join-P
 
 # A damaged station.json is reported and ignored; load and reset still work
 $r = Station @('-Code', $CodeA)
-[IO.File]::WriteAllText((Join-Path $env:LOCALAPPDATA 'CSSetup\station.json'), '{ "mouseDpi": "lots"')
+[IO.File]::WriteAllText((Join-Path $env:LOADOUT_STATE_DIR 'station.json'), '{ "mouseDpi": "lots"')
 $r = Station @('-Reset')
 Check 'damaged station.json: reset still works' ($r.code -eq 0 -and $r.text -match 'Ignoring' -and $r.text -match 'reset to its original') $r.text
-Remove-Item (Join-Path $env:LOCALAPPDATA 'CSSetup\station.json')
+Remove-Item (Join-Path $env:LOADOUT_STATE_DIR 'station.json')
 
 # A station where CS2 never ran: empty autoexec, no account folders
 New-Station -NoAccounts -EmptyAutoexec
@@ -163,6 +181,9 @@ Check 'fresh PC: reset succeeds' ($r.code -eq 0 -and (Read (Join-Path $cfgDir 'a
 Check 'fresh PC: reset keeps the first-run video file' ((Read (Join-Path $userCfg 'cs2_video.txt')) -eq $video) ''
 Check 'fresh PC: station mouse back' ((Mouse) -eq $stationMouse) (Mouse)
 
-$parts = $guestMouse -split '[/,]'
-SetMouse ([int]$parts[0]) ([int]$parts[1]) ([int]$parts[2]) ([int]$parts[3])
+} finally {
+    # Put this PC's own mouse settings back even if a check throws.
+    $parts = $guestMouse -split '[/,]'
+    SetMouse ([int]$parts[0]) ([int]$parts[1]) ([int]$parts[2]) ([int]$parts[3])
+}
 [pscustomobject]@{ passed = @($results.Values | Where-Object { -not $_.ok }).Count -eq 0; guestMouseRestored = ((Mouse) -eq $guestMouse); results = $results } | ConvertTo-Json -Depth 4
