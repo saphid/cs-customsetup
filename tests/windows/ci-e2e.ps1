@@ -30,6 +30,10 @@ try {
     Invoke-WebRequest "$server/station.cmd" -OutFile (Join-Path $dir 'Loadout.cmd') -UseBasicParsing
     $cmdOut = & cmd.exe /c "`"$(Join-Path $dir 'Loadout.cmd')`" -Reset" 2>&1 | Out-String
     $cmdOk = $LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $dir 'Loadout.ps1')) -and (Test-Path (Join-Path $dir 'Loadout.signed'))
+    # A second online start replaces the signed store in place.
+    $again = & cmd.exe /c "`"$(Join-Path $dir 'Loadout.cmd')`" -Reset" 2>&1 | Out-String
+    $cmdOk = $cmdOk -and $LASTEXITCODE -eq 0 -and $again -notmatch 'could not update' -and (Test-Path (Join-Path $dir 'Loadout.signed'))
+    $cmdOut += $again
     Write-Host ($(if ($cmdOk) { 'PASS ' } else { 'FAIL ' }) + 'Loadout.cmd downloads the station script and runs it')
     if (-not $cmdOk) { Write-Host "     $cmdOut" }
     # Server down: the launcher runs only a verified copy from Loadout.signed.
