@@ -1,4 +1,4 @@
-# Rainbow Six Siege X reference for CS Setup
+# Rainbow Six Siege X reference for Loadout
 
 Checked 2026-10-14. Desk research only: nothing here has been tested on a real Siege X
 install yet. Rainbow Six Siege became "Rainbow Six Siege X" on 2025-06-10 as a free

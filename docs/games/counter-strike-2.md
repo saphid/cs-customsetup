@@ -1,4 +1,4 @@
-# CS2 reference used by CS Setup
+# CS2 reference used by Loadout
 
 Checked 2026-10-09. Convar facts come from the SteamDatabase CS2 dump at
 commit `41efe395` (2026-10-05): `DumpSource2/convars.txt` and `commands.txt`.

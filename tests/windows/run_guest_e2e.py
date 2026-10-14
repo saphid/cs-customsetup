@@ -1,7 +1,7 @@
 """Run guest-e2e.ps1 in the dedicated Windows test VM through its relay client.
 
 usage: python3 run_guest_e2e.py CODE_A CODE_B [--client PATH] [--out FILE]
-The VM must reach the CS Setup server at http://10.0.2.2:18431 (see README).
+The VM must reach the Loadout server at http://10.0.2.2:18431 (see README).
 """
 import argparse, base64, json, subprocess, sys
 from pathlib import Path

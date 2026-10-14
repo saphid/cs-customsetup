@@ -1,4 +1,4 @@
-// CS Setup web app: build a profile, save it, get a 6-digit code.
+// Loadout web app: build a profile, save it, get a 6-digit code.
 import { importConfig, getPath, setPath } from './importer.js';
 import { NUMBERS } from './schema.js';
 const view = document.getElementById('view');
@@ -90,7 +90,7 @@ function home() {
     <div class="steps3">
       <div class="step"><b>1 · BUILD</b><p>Fill in your settings, or paste your autoexec or crosshair code. Takes two minutes.</p></div>
       <div class="step"><b>2 · SAVE</b><p>You get a 6-digit code and a QR code. Screenshot it.</p></div>
-      <div class="step"><b>3 · SIT DOWN</b><p>Type the code into the CS Setup window on the PC. It writes your config, sets the Windows mouse, and launches CS2.</p></div>
+      <div class="step"><b>3 · SIT DOWN</b><p>Type the code into the Loadout window on the PC. It writes your config, sets the Windows mouse, and launches CS2.</p></div>
     </div>`;
 }
 
@@ -399,7 +399,7 @@ async function doneView(code) {
   view.innerHTML = `<div class="result">
     <div class="label">Your setup code</div>
     <div class="code">${fmtCode(code)}</div>
-    <p style="color:var(--muted)">Screenshot this. Type it on any PC running CS Setup.</p>
+    <p style="color:var(--muted)">Screenshot this. Type it on any PC running Loadout.</p>
     <div class="qr"><img src="/api/profiles/${code}/qr.svg" alt="QR code linking to setup ${code}"></div>
     <div class="actions">
       <a class="btn" href="#/edit/${code}">Edit</a>
@@ -407,7 +407,7 @@ async function doneView(code) {
       ${key ? '<button class="btn" id="copyEdit">Copy edit link</button>' : ''}
     </div>
     <div class="callout"><b>At the tournament PC</b><ol>
-      <li>Open <b>CS Setup</b> on the PC (the admin will have it on screen).</li>
+      <li>Open <b>Loadout</b> on the PC (the admin will have it on screen).</li>
       <li>Type <b>${code}</b> and press Load.</li>
       <li>Press <b>Launch CS2</b>. Already in game? Type <code>exec cssetup</code> in the console.</li>
       <li>When you're done, press <b>reset this PC</b> for the next player.</li></ol></div>
@@ -469,9 +469,9 @@ function stationDoc() {
     <h1>Set up a station</h1>
     <p>Each tournament PC runs one PowerShell window. Players type their code; it writes their cfg, sets their resolution and Windows mouse, and starts CS2. Reset puts the PC back exactly as it was.</p>
     <h2>1. Get the station app</h2>
-    <p><a class="btn primary" href="/station.cmd">Download CSSetup.cmd</a></p>
+    <p><a class="btn primary" href="/station.cmd">Download Loadout.cmd</a></p>
     <p>Put it anywhere on the PC (the desktop is fine) and double-click it. It already points at this server (<code>${esc(origin)}</code>) and fetches the latest station app each time it starts. If Windows shows “Windows protected your PC”, choose More info → Run anyway. Or start it from a command prompt:</p>
-    <pre class="cfg">powershell -ExecutionPolicy Bypass -Command "irm ${esc(origin)}/station.ps1 -OutFile CSSetup.ps1; .\\CSSetup.ps1"</pre>
+    <pre class="cfg">powershell -ExecutionPolicy Bypass -Command "irm ${esc(origin)}/station.ps1 -OutFile Loadout.ps1; .\\Loadout.ps1"</pre>
     <h2>2. What it changes</h2>
     <ul>
       <li><code>game\\csgo\\cfg\\cssetup.cfg</code>: the player's settings, starting from CS2's default binds. <code>autoexec.cfg</code> gets one <code>exec cssetup</code> line, and Launch CS2 also passes <code>+exec cssetup</code>.</li>
@@ -492,9 +492,9 @@ function stationDoc() {
       <li><b>Turn Steam Cloud off for CS2 on each station account</b> (Steam → CS2 → Properties → General). CS2 uploads settings to the account's cloud as soon as a cfg runs, so with cloud on, a reset PC gets the last player's settings back. A loaded player's settings always win either way, because <code>+exec cssetup</code> runs after the saved config (verified in CS2).</li>
     </ul>
     <h2>Command line</h2>
-    <pre class="cfg">.\\CSSetup.ps1 -MouseDpi 800          # once per PC: the station mouse's DPI
-.\\CSSetup.ps1 -Code 123456 -Launch   # load and start CS2
-.\\CSSetup.ps1 -Reset                 # restore the station</pre>
+    <pre class="cfg">.\\Loadout.ps1 -MouseDpi 800          # once per PC: the station mouse's DPI
+.\\Loadout.ps1 -Code 123456 -Launch   # load and start CS2
+.\\Loadout.ps1 -Reset                 # restore the station</pre>
   </div>`;
 }
 

@@ -1,6 +1,6 @@
 {
-  "name": "CS Setup",
-  "short_name": "CS Setup",
+  "name": "Loadout",
+  "short_name": "Loadout",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0b0e13",

@@ -1,4 +1,4 @@
-# Overwatch 2 reference for CS Setup
+# Overwatch 2 reference for Loadout
 
 Checked 2026-10-14. Desk research only: nothing here has been tested on a real Overwatch 2
 install. Overwatch 2 runs through Battle.net or Steam; both need a Battle.net account

@@ -1,9 +1,9 @@
 {
-  "name": "cs-customsetup",
+  "name": "loadout",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Build a CS2 setup on your phone, type a 6-digit code at any LAN PC, play.",
+  "description": "Build your game setup on your phone, type a 6-digit code at any LAN PC, play. Counter-Strike 2 supported.",
   "scripts": {
     "start": "node server/server.mjs",
     "test": "node --test --disable-warning=ExperimentalWarning tests/*.test.mjs"
@@ -16,5 +16,5 @@
   },
   "packageManager": "pnpm@11.24.0",
   "license": "MIT",
-  "repository": "github:saphid/cs-customsetup"
+  "repository": "github:saphid/loadout"
 }

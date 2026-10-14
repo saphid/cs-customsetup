@@ -1,4 +1,4 @@
-# Rocket League reference for a CS Setup-style station
+# Rocket League reference for a Loadout-style station
 
 Checked 2026-10-14. Rocket League ships on the Epic Games Store (Epic app name
 `Sugar`). Players who owned the Steam version before the 2020 free-to-play

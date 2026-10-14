@@ -1,12 +1,12 @@
 <#
-CS Setup station. Type a 6-digit code, get your CS2 setup on this PC.
+Loadout station. Type a 6-digit code, get your CS2 setup on this PC.
 
-  CSSetup.ps1                      Full-screen station window
-  CSSetup.ps1 -Code 123456         Apply without the window
-  CSSetup.ps1 -Reset               Put the station back as it was before the first load
-  CSSetup.ps1 -SaveBaseline        Admin: capture this PC's current state as the baseline
-  CSSetup.ps1 -Launch              Start CS2 with the loaded profile
-  CSSetup.ps1 -MouseDpi 800        This PC's mouse DPI (remembered); sensitivity
+  Loadout.ps1                      Full-screen station window
+  Loadout.ps1 -Code 123456         Apply without the window
+  Loadout.ps1 -Reset               Put the station back as it was before the first load
+  Loadout.ps1 -SaveBaseline        Admin: capture this PC's current state as the baseline
+  Loadout.ps1 -Launch              Start CS2 with the loaded profile
+  Loadout.ps1 -MouseDpi 800        This PC's mouse DPI (remembered); sensitivity
                                    is converted so each player's eDPI stays the same
 
 The first load saves the station's original files and mouse settings under
@@ -52,7 +52,7 @@ if ($MouseDpi -gt 0) {
         } else { $StationWarning = "Ignoring $StationFile`: no valid mouseDpi. Run with -MouseDpi to set it." }
     } catch { $StationWarning = "Ignoring $StationFile`: $($_.Exception.Message)" }
 }
-if ($StationWarning) { [Console]::Error.WriteLine("CS Setup: $StationWarning") }
+if ($StationWarning) { [Console]::Error.WriteLine("Loadout: $StationWarning") }
 
 Add-Type -Namespace CSSetup -Name Native -MemberDefinition @'
 [DllImport("user32.dll", SetLastError = true)]
@@ -243,7 +243,7 @@ function Get-Bundle([string]$code) {
         if ($_.Exception.PSObject.Properties['Response'] -and $_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
         if ($status -eq 404) { throw "No setup found for code $code. Check the number on your phone." }
         if ($status -eq 409) { throw "Setup $code was saved by an older version. Open it on your phone and save it again." }
-        throw "Could not reach the CS Setup server at $Server."
+        throw "Could not reach the Loadout server at $Server."
     }
 }
 
@@ -279,7 +279,7 @@ function Invoke-Apply([string]$code, [scriptblock]$report) {
         [IO.File]::WriteAllText((Join-Path $cfgDir "$CfgName.cfg"), $bundle.cfg, $utf8)
         $autoexec = Join-Path $cfgDir 'autoexec.cfg'
         $base = if (Test-Path $autoexec) { [IO.File]::ReadAllText($autoexec).TrimEnd() } else { '' }
-        [IO.File]::WriteAllText($autoexec, ("$base`r`nexec $CfgName // CS Setup`r`n").TrimStart(), $utf8)
+        [IO.File]::WriteAllText($autoexec, ("$base`r`nexec $CfgName // Loadout`r`n").TrimStart(), $utf8)
         & $report "Wrote $CfgName.cfg for $($bundle.name)"
 
         if ($bundle.video) {
@@ -325,7 +325,7 @@ if ($Reset -or $SaveBaseline -or $Code -or $Launch) {
         elseif ($Code) { Invoke-Apply $Code | Out-Null }
         if ($Launch) { Start-Cs2 }
     } catch {
-        [Console]::Error.WriteLine("CS Setup: $($_.Exception.Message)")
+        [Console]::Error.WriteLine("Loadout: $($_.Exception.Message)")
         exit 1
     }
     return
@@ -337,7 +337,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 [xml]$xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="CS Setup" Width="1100" Height="720" WindowStartupLocation="CenterScreen"
+        Title="Loadout" Width="1100" Height="720" WindowStartupLocation="CenterScreen"
         Background="#0E1116" FontFamily="Segoe UI" Foreground="#E8ECF2">
   <Window.Resources>
     <Style TargetType="Button" x:Key="Primary">
@@ -373,7 +373,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
     <DockPanel Grid.Row="0">
       <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
         <Border Width="14" Height="14" CornerRadius="3" Background="#F5A524" Margin="0,0,12,0"/>
-        <TextBlock Text="CS SETUP" FontSize="18" FontWeight="Bold" Foreground="#E8ECF2"/>
+        <TextBlock Text="LOADOUT" FontSize="18" FontWeight="Bold" Foreground="#E8ECF2"/>
         <TextBlock Text="  station" FontSize="18" Foreground="#7C8796"/>
       </StackPanel>
       <TextBlock x:Name="ServerText" DockPanel.Dock="Right" HorizontalAlignment="Right" Foreground="#5C6675" FontSize="13" VerticalAlignment="Center"/>
@@ -490,4 +490,5 @@ $ui.ResetButton.Add_Click({
 })
 $window.Add_ContentRendered({ $ui.CodeBox.Focus() | Out-Null })
 [void]$window.ShowDialog()
-# CS-SETUP-END: the CSSetup.cmd launcher checks for this line to detect a complete download.
+# LOADOUT-END: the Loadout.cmd launcher checks for this line to detect a complete download.
+# CS-SETUP-END: the marker launchers downloaded before the rename look for.

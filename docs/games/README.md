@@ -10,7 +10,7 @@ each file.
 
 | Game | Verdict | What the station can set | What stays manual or account-bound |
 |---|---|---|---|
-| [Counter-Strike 2](../cs2-reference.md) | **Done** | Everything (cfg + `+exec`), video, Windows mouse | Crosshair share code import (one click) |
+| [Counter-Strike 2](counter-strike-2.md) | **Done** | Everything (cfg + `+exec`), video, Windows mouse | Crosshair share code import (one click) |
 | [Apex Legends](apex-legends.md) | **Full** | Local Source-style cfg files, `autoexec` + `+exec`; sensitivity 1:1 with CS2 | Check that EA app / Steam Cloud don't sync the files |
 | [Dota 2](dota-2.md) | **Full** (Steam Cloud off) | Hotkeys `.lst`, convar/key vcfg, `+exec` cfg, video | Cursor speed is Windows pointer speed (approximate DPI match) |
 | [Deadlock](deadlock.md) | **Full** (Steam Cloud off) | Same Valve layout as CS2; same sensitivity scale | Invite-only playtest; patches change the hotkey format often |

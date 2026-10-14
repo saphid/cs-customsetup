@@ -100,9 +100,9 @@ export function createApp({ store, publicUrl, trustProxy = false, createLimit = 
 
   async function station(req, res) {
     // The station script ships with this server's address baked in.
-    const template = await readFile(join(root, 'station', 'CSSetup.ps1'), 'utf8');
+    const template = await readFile(join(root, 'station', 'Loadout.ps1'), 'utf8');
     const script = template.replace('__SERVER_URL__', baseUrl(req).replace(/'/g, ''));
-    send(res, 200, script, 'text/plain; charset=utf-8', { 'Content-Disposition': 'attachment; filename="CSSetup.ps1"' });
+    send(res, 200, script, 'text/plain; charset=utf-8', { 'Content-Disposition': 'attachment; filename="Loadout.ps1"' });
   }
 
   // Double-click launcher: fetches the latest station script on every start
@@ -111,18 +111,18 @@ export function createApp({ store, publicUrl, trustProxy = false, createLimit = 
     const url = baseUrl(req).replace(/[^\w.:/\-\[\]]/g, '');
     const lines = [
       '@echo off',
-      `rem CS Setup station for ${url}`,
-      'set "CSSETUP_DIR=%~dp0"',
+      `rem Loadout station for ${url}`,
+      'set "LOADOUT_DIR=%~dp0"',
       // Download to a temporary file and keep it only if it is a complete station script.
-      'powershell -NoProfile -ExecutionPolicy Bypass -Command "$f = Join-Path $env:CSSETUP_DIR \'CSSetup.ps1\'; $t = $f + \'.download\'; '
+      'powershell -NoProfile -ExecutionPolicy Bypass -Command "$f = Join-Path $env:LOADOUT_DIR \'Loadout.ps1\'; $t = $f + \'.download\'; '
         + `try { Invoke-WebRequest '${url}/station.ps1' -OutFile $t -UseBasicParsing; `
-        + "if (-not (Select-String -Path $t -Pattern '^# CS-SETUP-END' -Quiet)) { throw 'incomplete' }; Move-Item $t $f -Force } "
+        + "if (-not (Select-String -Path $t -Pattern '^# LOADOUT-END' -Quiet)) { throw 'incomplete' }; Move-Item $t $f -Force } "
         + `catch { Remove-Item $t -ErrorAction SilentlyContinue; if (-not (Test-Path $f)) { Write-Host 'Cannot reach ${url}'; exit 1 } }"`,
       'if errorlevel 1 (pause & exit /b 1)',
-      'powershell -NoProfile -ExecutionPolicy Bypass -File "%CSSETUP_DIR%CSSetup.ps1" %*',
+      'powershell -NoProfile -ExecutionPolicy Bypass -File "%LOADOUT_DIR%Loadout.ps1" %*',
       '',
     ];
-    send(res, 200, lines.join('\r\n'), 'application/octet-stream', { 'Content-Disposition': 'attachment; filename="CSSetup.cmd"' });
+    send(res, 200, lines.join('\r\n'), 'application/octet-stream', { 'Content-Disposition': 'attachment; filename="Loadout.cmd"' });
   }
 
   async function staticFile(res, path) {
@@ -165,6 +165,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     trustProxy: process.env.TRUST_PROXY === '1',
     createLimit: Number(process.env.CREATE_LIMIT || 60),
   }).listen(port, host, () => {
-    console.log(`CS Setup listening on http://${host}:${port}`);
+    console.log(`Loadout listening on http://${host}:${port}`);
   });
 }

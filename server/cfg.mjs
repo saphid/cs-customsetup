@@ -18,7 +18,7 @@ export function stationSensitivity(p, stationDpi) {
 export function buildCfg(p, code, { stationDpi } = {}) {
   const sens = stationSensitivity(p, stationDpi);
   const lines = [
-    `// CS Setup profile ${code} for ${p.name}${p.team ? ` (${p.team})` : ''}`,
+    `// Loadout profile ${code} for ${p.name}${p.team ? ` (${p.team})` : ''}`,
     '// Generated file. The station rewrites it on every load.',
     '',
     // A known starting point: CS2's default keys, then the player's binds.
@@ -78,7 +78,7 @@ export function buildCfg(p, code, { stationDpi } = {}) {
     for (const { key, command } of p.binds) lines.push(`bind ${q(key)} ${q(command)}`);
   }
   if (p.extraCfg) lines.push('', '// Extra commands', p.extraCfg);
-  lines.push('', `echo "CS Setup: loaded profile ${code} (${p.name})"`, '');
+  lines.push('', `echo "Loadout: loaded profile ${code} (${p.name})"`, '');
   return lines.join('\r\n');
 }
 

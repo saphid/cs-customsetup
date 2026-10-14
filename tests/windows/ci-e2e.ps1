@@ -26,10 +26,10 @@ try {
     }
     # The double-click launcher: downloads the script, then runs it with the given arguments.
     $dir = Join-Path $env:TEMP 'cssetup cmd test'; New-Item -ItemType Directory -Force $dir | Out-Null
-    Invoke-WebRequest "$server/station.cmd" -OutFile (Join-Path $dir 'CSSetup.cmd') -UseBasicParsing
-    $cmdOut = & cmd.exe /c "`"$(Join-Path $dir 'CSSetup.cmd')`" -Reset" 2>&1 | Out-String
-    $cmdOk = $LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $dir 'CSSetup.ps1')) -and -not (Test-Path (Join-Path $dir 'CSSetup.ps1.download'))
-    Write-Host ($(if ($cmdOk) { 'PASS ' } else { 'FAIL ' }) + 'CSSetup.cmd downloads the station script and runs it')
+    Invoke-WebRequest "$server/station.cmd" -OutFile (Join-Path $dir 'Loadout.cmd') -UseBasicParsing
+    $cmdOut = & cmd.exe /c "`"$(Join-Path $dir 'Loadout.cmd')`" -Reset" 2>&1 | Out-String
+    $cmdOk = $LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $dir 'Loadout.ps1')) -and -not (Test-Path (Join-Path $dir 'Loadout.ps1.download'))
+    Write-Host ($(if ($cmdOk) { 'PASS ' } else { 'FAIL ' }) + 'Loadout.cmd downloads the station script and runs it')
     if (-not $cmdOk) { Write-Host "     $cmdOut" }
     if (-not $report.passed -or -not $cmdOk) { exit 1 }
 } finally {

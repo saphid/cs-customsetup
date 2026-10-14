@@ -207,7 +207,7 @@ test('API: create, load, edit with key, cfg, QR, station bundle', async () => {
     assert.equal((await bad.json()).field, 'mouse.sensitivity');
 
     const script = await (await fetch(`${base}/station.ps1`)).text();
-    assert.match(script, /^# CS-SETUP-END/m, 'end marker the launcher checks');
+    assert.match(script, /^# LOADOUT-END/m, 'end marker the launcher checks');
     assert.ok(script.includes(`[string]$Server = '${base.replace('127.0.0.1', '127.0.0.1')}'`));
     const cmd = await (await fetch(`${base}/station.cmd`)).text();
     assert.ok(cmd.includes(`Invoke-WebRequest '${base}/station.ps1'`));

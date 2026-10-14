@@ -1,7 +1,7 @@
 # docker compose up -d   ->  http://<this machine>:8080
 services:
-  cssetup:
-    image: ghcr.io/saphid/cs-customsetup:latest
+  loadout:
+    image: ghcr.io/saphid/loadout:latest
     build: .
     ports:
       - "8080:8080"

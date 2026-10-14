@@ -62,7 +62,7 @@ SetMouse 14 6 10 1   # a non-default station mouse, so every change is visible
 $stationMouse = Mouse
 
 $r = Station @('-Code', '000000')
-Check 'unknown code: clean error, nothing changed' ($r.code -eq 1 -and $r.text -match 'CS Setup: No setup found' -and -not (Test-Path (Join-Path $cfgDir 'cssetup.cfg'))) $r.text
+Check 'unknown code: clean error, nothing changed' ($r.code -eq 1 -and $r.text -match 'Loadout: No setup found' -and -not (Test-Path (Join-Path $cfgDir 'cssetup.cfg'))) $r.text
 
 # Player A
 Set-Clipboard -Value 'before'

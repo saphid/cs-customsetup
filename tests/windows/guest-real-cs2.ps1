@@ -20,7 +20,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $steam = (Get-ItemProperty 'HKCU:\Software\Valve\Steam').SteamPath -replace '/', '\'
 $work = 'C:\CSSetupTest\real'; New-Item -ItemType Directory -Force $work | Out-Null
-$station = Join-Path $work 'CSSetup.ps1'
+$station = Join-Path $work 'Loadout.ps1'
 Invoke-WebRequest "$Server/station.ps1" -OutFile $station -UseBasicParsing
 $bundle = Invoke-RestMethod "$Server/api/profiles/$Code/station?dpi=$MouseDpi" -UseBasicParsing
 

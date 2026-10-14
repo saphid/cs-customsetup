@@ -20,7 +20,7 @@ outside the game's own files. "Unverified" means not tested on a real station.
 ## Windows mouse (done)
 
 Pointer speed and Enhance Pointer Precision via `SystemParametersInfo`, with
-baseline and restore (see `docs/cs2-reference.md`). Sensitivity conversion
+baseline and restore (see `docs/games/counter-strike-2.md`). Sensitivity conversion
 works from cm/360: when player DPI and station DPI differ, scale the in-game
 sensitivity by `playerDpi / stationDpi`. This is game-agnostic.
 

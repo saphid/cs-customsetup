@@ -1,4 +1,4 @@
-# Fortnite reference for a CS Setup station
+# Fortnite reference for a Loadout station
 
 Checked 2026-10-14 from web sources only; nothing here was tested on a real
 Fortnite install. Items marked (unverified) need a test on a Windows station

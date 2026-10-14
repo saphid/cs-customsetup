@@ -1,4 +1,4 @@
-# VALORANT reference for CS Setup
+# VALORANT reference for Loadout
 
 Checked 2026-10-14. Desk research only: nothing here has been tested on a real VALORANT
 install. VALORANT runs only through the Riot Client, which needs a Riot account login.

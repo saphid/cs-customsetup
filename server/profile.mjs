@@ -1,6 +1,6 @@
 // Profile schema: every field is checked here, so cfg and station output only
 // ever contain allowlisted commands with checked values. Ranges and defaults
-// follow the CS2 convar dump of 2026-10-05 (docs/cs2-reference.md).
+// follow the CS2 convar dump of 2026-10-05 (docs/games/counter-strike-2.md).
 import { KEY_NAME, checkBindCommand, checkCfgLine, stripComment } from '../web/rules.js';
 import { NUMBERS, BOOLEANS, CHOICES, SHARE_CODE } from '../web/schema.js';
 

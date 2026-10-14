@@ -1,4 +1,4 @@
-# Marvel Rivals reference for CS Setup
+# Marvel Rivals reference for Loadout
 
 Checked 2026-10-14. Desk research only: nothing here has been tested on a real Marvel
 Rivals install, and NetEase publishes no documentation for its config files. Marvel

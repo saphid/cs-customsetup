@@ -1,4 +1,4 @@
-# Apex Legends reference for CS Setup
+# Apex Legends reference for Loadout
 
 Checked 2026-10-14. Desk research only: nothing here has been tested on a real Apex
 install. Apex runs through Steam or the EA app; both need an EA account login. The game

@@ -1,6 +1,6 @@
 // Profile schema shared by the server, the importer and the editor controls.
 // Ranges and defaults follow the CS2 convar dump of 2026-10-05
-// (docs/cs2-reference.md).
+// (docs/games/counter-strike-2.md).
 
 // [min, max, default, integer]. A value outside the range is rejected, not
 // clamped, so a typo never silently becomes a different sensitivity.
