@@ -36,6 +36,13 @@ try {
     $cmdOut += $again
     Write-Host ($(if ($cmdOk) { 'PASS ' } else { 'FAIL ' }) + 'Loadout.cmd downloads the station script and runs it')
     if (-not $cmdOk) { Write-Host "     $cmdOut" }
+    # Another launcher holds the launcher lock: this one gives up without touching anything.
+    $env:LOADOUT_LOCK_WAIT_MS = '500'
+    $busy = New-Object Threading.Mutex($false, 'Local\LoadoutLauncher'); [void]$busy.WaitOne()
+    $storeBefore = [IO.File]::ReadAllText((Join-Path $dir 'Loadout.signed'))
+    $busyOut = & cmd.exe /c "`"$(Join-Path $dir 'Loadout.cmd')`" -Reset" 2>&1 | Out-String
+    $busyOk = $LASTEXITCODE -ne 0 -and $busyOut -match 'still busy' -and [IO.File]::ReadAllText((Join-Path $dir 'Loadout.signed')) -eq $storeBefore
+    $busy.ReleaseMutex(); $busy.Dispose(); Remove-Item Env:\LOADOUT_LOCK_WAIT_MS
     # Server down: the launcher runs only a verified copy from Loadout.signed.
     Stop-Process -Id $node.Id -Force; Start-Sleep 1
     $cmdFile = Join-Path $dir 'Loadout.cmd'
@@ -60,6 +67,7 @@ try {
     $r = & $run
     $results['Launcher refuses a station older than one it has seen'] = @(($r.code -ne 0 -and $r.text -match 'no verified copy'), $r.text)
     Remove-Item (Join-Path $dir 'Loadout.version')
+    $results['Launcher waits for another launcher, then gives up untouched'] = @($busyOk, $busyOut)
     $launcherOk = $true
     foreach ($k in $results.Keys) {
         $ok = $results[$k][0]; if (-not $ok) { $launcherOk = $false }

@@ -199,7 +199,10 @@ export function createApp({ store, publicUrl, trustProxy = false, createLimit = 
       "$dir = $env:LOADOUT_DIR; $f = Join-Path $dir 'Loadout.ps1'; $store = Join-Path $dir 'Loadout.signed'; $floorFile = Join-Path $dir 'Loadout.version'",
       // One launcher at a time updates, checks and hands over the script.
       "$lock = New-Object Threading.Mutex($false, 'Local\\LoadoutLauncher')",
-      'try { [void]$lock.WaitOne(60000) } catch [Threading.AbandonedMutexException] { }',
+      '$wait = if ($env:LOADOUT_LOCK_WAIT_MS) { [int]$env:LOADOUT_LOCK_WAIT_MS } else { 60000 }',
+      'try { $held = $lock.WaitOne($wait) } catch [Threading.AbandonedMutexException] { $held = $true }',
+      // Never touch the store, the floor or Loadout.ps1 without the lock.
+      "if (-not $held) { Write-Host 'Loadout: another Loadout launcher on this PC is still busy. Try again in a minute.'; exit 1 }",
       // Highest station version seen on this PC (read under the lock): it only goes up.
       `$min = ${minVersion}`,
       'if (Test-Path $floorFile) { $v = 0; if ([int]::TryParse((Get-Content $floorFile -Raw).Trim(), [ref]$v) -and $v -gt $min) { $min = $v } }',
