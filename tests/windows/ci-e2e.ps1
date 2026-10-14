@@ -46,6 +46,7 @@ try {
         if (-not $c[1]) { Write-Host "     $($c[2])" }
     }
     if (-not $report.passed -or -not $cmdOk -or -not $offOk -or -not $badOk) { exit 1 }
+    $global:LASTEXITCODE = 0   # the tamper check's expected failure must not become this script's exit code
 } finally {
     Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue
 }
