@@ -49,7 +49,7 @@ jobs:
       - name: Smoke test the image
         run: |
           docker build -t cssetup-local .
-          docker run -d --name s -p 8080:8080 cssetup-local
+          docker run -d --name cssetup-smoke -p 8080:8080 cssetup-local
           for i in $(seq 1 20); do curl -fs http://localhost:8080/ >/dev/null && break; sleep 1; done
           code=$(curl -fs -X POST http://localhost:8080/api/profiles -d '{"name":"ci"}' | node -pe 'JSON.parse(require("fs").readFileSync(0)).code')
           curl -fs "http://localhost:8080/api/profiles/$code/station?dpi=800" | grep -q cssetup
