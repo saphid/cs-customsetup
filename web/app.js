@@ -196,6 +196,7 @@ function editor(code, saved) {
     <h1 style="margin:8px 0 6px">${code ? `Edit setup ${code}` : 'Build your setup'}</h1>
     <p class="hint lead">${code ? 'Change anything, then press Save changes. Your code stays the same.'
       : copiedFrom ? `Copied from setup ${esc(copiedFrom)}. Change what you like and save to get your own code.`
+      : draft ? 'Your unsaved setup is below, as you left it.'
       : "Everything starts at CS2's defaults. Change what matters to you and press Save."}</p>
     ${draft && !copiedFrom ? `<div class="callout warn draft" role="status"><b>${code ? 'Unsaved changes restored.' : 'Continuing your unsaved setup.'}</b>
       <button class="btn small" type="button" id="discardDraft">${code ? 'Discard changes' : 'Start fresh'}</button></div>` : ''}
@@ -448,6 +449,7 @@ function editor(code, saved) {
     // The form is frozen while saving, so what was sent is exactly what the draft holds.
     const gen = routeGen;
     btn.disabled = true; view.inert = true; btn.textContent = 'Saving…';
+    const submitted = JSON.stringify(state);   // this request owns only this exact draft
     const payload = clone(state);
     payload.binds = payload.binds.filter((b) => b.key.trim() || b.command.trim());
     try {
@@ -459,7 +461,8 @@ function editor(code, saved) {
         keys.set(res.code, res.editKey);            // kept in memory even if storage fails; the next page says so
         saved = res.code;
       }
-      storage.del(draftKey(code));
+      // A newer draft (edited after leaving and coming back) is kept.
+      if (JSON.stringify(storage.get(draftKey(code))) === submitted) storage.del(draftKey(code));
       // Only move on if the player is still on this page.
       if (gen === routeGen) location.hash = `#/done/${saved}`;
       else toast(code ? `Setup ${code} saved` : `Saved: your code is ${saved}`);
@@ -468,7 +471,8 @@ function editor(code, saved) {
       if (e.field) showError(e.field, e.message);
       else bar.querySelector('#saveError').textContent = e.message;
     } finally {
-      view.inert = false; btn.disabled = false; btn.textContent = code ? 'Save changes' : 'Save & get my code';
+      // route() already unfroze a page the player moved to; never unfreeze another save's form.
+      if (gen === routeGen) { view.inert = false; btn.disabled = false; btn.textContent = code ? 'Save changes' : 'Save & get my code'; }
     }
   }, { signal: signal() });
 

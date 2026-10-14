@@ -37,6 +37,26 @@ const DEFAULT_BINDS = {
 };
 const UNBOUND = new Set(['', '<unbound>']);
 
+// CS2 saves keys as USB HID scan codes ("scancode26" is W on a US layout).
+// Two names for one physical key must count as the same key when an import
+// replaces what a profile had.
+const HID = { 40: 'enter', 41: 'escape', 42: 'backspace', 43: 'tab', 44: 'space', 45: '-', 46: '=', 47: '[', 48: ']',
+  49: '\\', 51: ';', 52: "'", 53: '`', 54: ',', 55: '.', 56: '/', 57: 'capslock' };
+for (let i = 0; i < 26; i++) HID[4 + i] = String.fromCharCode(97 + i);
+for (let i = 1; i <= 9; i++) HID[29 + i] = String(i);
+HID[39] = '0';
+for (let i = 1; i <= 12; i++) HID[57 + i] = `f${i}`;
+export const keyId = (key) => {
+  const k = String(key).toLowerCase().replace(/^"|"$/g, '');
+  const m = k.match(/^scancode(\d+)$/);
+  return (m && HID[m[1]]) || k;
+};
+// Key named by a bind/unbind line, quoted or not.
+const lineKey = (line) => {
+  const t = [...line.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]);
+  return /^(bind|unbind)$/i.test(t[0] || '') && t[1] ? keyId(t[1]) : null;
+};
+
 export function importConfig(text, state) {
   let applied = 0, skipped = 0, adjusted = 0, ignoredVideo = 0;
   const extra = []; const notes = new Set(); const refused = [];
@@ -55,11 +75,13 @@ export function importConfig(text, state) {
   const addBind = (rawKey, command) => {
     const key = rawKey.toLowerCase();
     if (!KEY_NAME.test(key)) { refused.push(`${rawKey} (not a key name)`); return; }
-    if (UNBOUND.has(command)) { keyPlan.set(key, { unbind: true }); return; }
-    if (DEFAULT_BINDS[key] === command) { keyPlan.set(key, { default: true }); return; }
+    const id = keyId(key);
+    keyPlan.delete(id);            // re-insert so the last mention also comes last
+    if (UNBOUND.has(command)) { keyPlan.set(id, { key, unbind: true }); return; }
+    if (DEFAULT_BINDS[id] === command) { keyPlan.set(id, { key, default: true }); return; }
     const problem = checkBindCommand(command);
     if (problem) { refused.push(`${rawKey} → ${command} (${problem})`); return; }
-    keyPlan.set(key, { command });
+    keyPlan.set(id, { key, command });
   };
   const tokens = (line) => [...line.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]);
   const sections = []; let pending = null;
@@ -134,19 +156,18 @@ export function importConfig(text, state) {
   }
   // Keys: drop whatever the profile had for each imported key (custom binds and
   // bind/unbind extra lines), then apply the imported result.
-  const keyOf = (line) => { const m = line.match(/^\s*(?:bind|unbind)\s+"?([^"\s]+)"?/i); return m && m[1].toLowerCase(); };
   let existing = state.extraCfg ? state.extraCfg.split('\n') : [];
   if (keyPlan.size) {
-    state.binds = state.binds.filter((b) => !keyPlan.has(b.key));
-    existing = existing.filter((l) => !keyPlan.has(keyOf(l)));
-    for (const [key, plan] of keyPlan) {
-      if (plan.command) state.binds.push({ key, command: plan.command });
-      else if (plan.unbind) extra.push(`unbind "${key}"`);
+    state.binds = state.binds.filter((b) => !keyPlan.has(keyId(b.key)));
+    existing = existing.filter((l) => !keyPlan.has(lineKey(l)));
+    for (const plan of keyPlan.values()) {
+      if (plan.command) state.binds.push({ key: plan.key, command: plan.command });
+      else if (plan.unbind) extra.push(`unbind "${plan.key}"`);
       applied++;
     }
   }
   if (extra.length || keyPlan.size) {
-    const nameOf = (l) => keyOf(l) ? `key ${keyOf(l)}` : l.split(/\s+/)[0];
+    const nameOf = (l) => lineKey(l) ? `key ${lineKey(l)}` : l.split(/\s+/)[0].replace(/"/g, '').toLowerCase();
     const names = new Set(extra.map(nameOf));
     state.extraCfg = existing.filter((l) => !names.has(nameOf(l))).concat(extra).slice(0, 200).join('\n');
   }

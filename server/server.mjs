@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join, extname, normalize, dirname } from 'node:path';
 import { networkInterfaces } from 'node:os';
+import { createHash } from 'node:crypto';
 import QRCode from 'qrcode';
 import { Store, StoreFullError } from './store.mjs';
 import { Signer } from './signing.mjs';
@@ -175,34 +176,66 @@ export function createApp({ store, publicUrl, trustProxy = false, createLimit = 
     const script = template.replace('__SERVER_URL__', scriptUrl(req)).replace('__SIGNING_KEY__', signer.publicXml)
       .replace('__SIGNING_FP__', signer.fingerprint);
     res.setHeader('Content-Disposition', 'attachment; filename="Loadout.ps1"');
+    // Freshness for the launcher: a signature over its nonce and this script's hash,
+    // so a recorded older script cannot be replayed as an update.
+    const nonce = new URL(req.url, 'http://x').searchParams.get('nonce') || '';
+    if (/^[0-9a-f]{16,64}$/.test(nonce)) {
+      const hash = createHash('sha256').update(Buffer.from(script, 'utf8')).digest('hex');
+      res.setHeader('X-Loadout-Fresh', signer.sign(Buffer.from(`${nonce}:${hash}`, 'utf8')));
+    }
     sendSigned(res, script, 'text/plain; charset=utf-8');
   }
 
   // Double-click launcher: fetches the latest station script on every start,
   // keeps it only if its signature matches the key baked in here, and falls
   // back to the last verified copy when the server is unreachable.
-  function stationCmd(req, res) {
+  async function stationCmd(req, res) {
     const url = scriptUrl(req);
+    // The launcher never accepts a station script older than the one current when it was downloaded.
+    const template = await readFile(join(root, 'station', 'Loadout.ps1'), 'utf8');
+    const minVersion = Number(template.match(/^\$StationVersion = (\d+)/m)?.[1] || 0);
     const update = [
       "$ErrorActionPreference = 'Stop'",
-      "$f = Join-Path $env:LOADOUT_DIR 'Loadout.ps1'; $sig = \"$f.sig\"",
+      "$dir = $env:LOADOUT_DIR; $f = Join-Path $dir 'Loadout.ps1'; $store = Join-Path $dir 'Loadout.signed'; $floorFile = Join-Path $dir 'Loadout.version'",
+      // Highest station version seen on this PC: it only goes up.
+      `$min = ${minVersion}`,
+      'if (Test-Path $floorFile) { $v = 0; if ([int]::TryParse((Get-Content $floorFile -Raw).Trim(), [ref]$v) -and $v -gt $min) { $min = $v } }',
       '$rsa = New-Object Security.Cryptography.RSACryptoServiceProvider',
       `$rsa.FromXmlString('${signer.publicXml}')`,
       'function Test-Signed([byte[]]$bytes, [string]$signature) {',
       "  try { return [bool]$signature -and $rsa.VerifyData($bytes, 'SHA256', [Convert]::FromBase64String($signature)) } catch { return $false }",
       '}',
+      'function Get-Version([byte[]]$bytes) {',
+      "  $m = [regex]::Match([Text.Encoding]::UTF8.GetString($bytes), '(?m)^\$StationVersion = (\d+)')",
+      '  if ($m.Success) { [int]$m.Groups[1].Value } else { 0 }',
+      '}',
       'try {',
-      `  $r = Invoke-WebRequest '${url}/station.ps1' -UseBasicParsing -TimeoutSec 10`,
-      '  $bytes = $r.RawContentStream.ToArray(); $signature = [string]$r.Headers[\'X-Loadout-Signature\']',
-      "  if (-not (Test-Signed $bytes $signature)) { throw 'the download failed its signature check' }",
-      "  [IO.File]::WriteAllBytes(\"$f.download\", $bytes); [IO.File]::WriteAllText(\"$sig.download\", $signature)",
-      '  Move-Item "$f.download" $f -Force; Move-Item "$sig.download" $sig -Force',
+      '  $random = New-Object byte[] 16; $rng = [Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($random)',
+      "  $nonce = -join ($random | ForEach-Object { '{0:x2}' -f $_ })",
+      `  $r = Invoke-WebRequest "${url}/station.ps1?nonce=$nonce" -UseBasicParsing -TimeoutSec 10`,
+      "  $bytes = $r.RawContentStream.ToArray(); $signature = [string]$r.Headers['X-Loadout-Signature']",
+      "  $sha = -join ([Security.Cryptography.SHA256]::Create().ComputeHash($bytes) | ForEach-Object { '{0:x2}' -f $_ })",
+      "  $fresh = Test-Signed ([Text.Encoding]::UTF8.GetBytes(\"$($nonce):$sha\")) ([string]$r.Headers['X-Loadout-Fresh'])",
+      "  if (-not (Test-Signed $bytes $signature) -or -not $fresh) { throw 'the download failed its signature check' }",
+      "  if ((Get-Version $bytes) -lt $min) { throw 'the server offered an older station app than this PC already has' }",
+      // Script and signature are kept together in one file, replaced in one step.
+      '  $tmp = "$store.$PID.tmp"',
+      '  [IO.File]::WriteAllText($tmp, (@{ signature = $signature; script = [Convert]::ToBase64String($bytes) } | ConvertTo-Json -Compress))',
+      '  Move-Item $tmp $store -Force',
       '} catch {',
+      '  Remove-Item "$store.$PID.tmp" -ErrorAction SilentlyContinue',
       `  Write-Host "Loadout: could not update the station app from ${url} ($($_.Exception.Message)). Using the copy downloaded earlier."`,
       '}',
-      // The copy about to run must carry this server's signature, every time.
-      "$ok = (Test-Path $f) -and (Test-Path $sig) -and (Test-Signed ([IO.File]::ReadAllBytes($f)) ([IO.File]::ReadAllText($sig).Trim()))",
+      // Only a verified copy runs, every time.
+      '$ok = $false',
+      'try {',
+      '  $entry = Get-Content $store -Raw | ConvertFrom-Json',
+      '  $bytes = [Convert]::FromBase64String($entry.script); $version = Get-Version $bytes',
+      '  $ok = (Test-Signed $bytes $entry.signature) -and $version -ge $min',
+      '} catch { }',
       "if (-not $ok) { Write-Host 'Loadout: no verified copy of the station app on this PC. Download Loadout.cmd again from the admin page.'; exit 1 }",
+      'if ($version -gt $min) { try { Set-Content $floorFile $version } catch { } }',
+      'if (-not ((Test-Path $f) -and [Convert]::ToBase64String([IO.File]::ReadAllBytes($f)) -eq $entry.script)) { [IO.File]::WriteAllBytes($f, $bytes) }',
     ].join('\n');
     const lines = [
       '@echo off',
@@ -236,7 +269,7 @@ export function createApp({ store, publicUrl, trustProxy = false, createLimit = 
       try { ({ pathname: path, searchParams: query } = new URL(req.url, 'http://x')); } catch { return send(res, 400, { error: 'Bad request' }); }
       if (path.startsWith('/api/')) return await api(req, res, path, query);
       if (path === '/station.ps1') return await station(req, res);
-      if (path === '/station.cmd') return stationCmd(req, res);
+      if (path === '/station.cmd') return await stationCmd(req, res);
       if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'Method not allowed' });
       return await staticFile(res, path);
     } catch (error) {

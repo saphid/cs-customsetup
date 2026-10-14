@@ -170,3 +170,8 @@ kbd { font-family: ui-monospace, Consolas, monospace; color: var(--text); backgr
 /* Round 2: every touch target at least 44px tall. */
 .btn.small, .chip, .range input[type=number], .bind input, .bind button { min-height: 44px; }
 .preview .bgs button { width: 44px; height: 44px; }
+/* Round 3 polish */
+main section, main details.section { scroll-margin-top: 92px; }
+input[type=text], input[type=number], select { min-height: 44px; }
+.top nav a { display: inline-flex; align-items: center; min-height: 44px; }
+details.section > summary { min-height: 44px; display: flex; align-items: center; }

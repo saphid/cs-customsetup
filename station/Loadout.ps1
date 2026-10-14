@@ -39,6 +39,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
+# Raised whenever a release fixes a security problem. Loadout.cmd refuses any
+# signed station script older than the newest version it has seen.
+$StationVersion = 3
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # LOADOUT_STATE_DIR is for tests, so they never touch a real station's baseline.
@@ -51,22 +54,27 @@ $CsFolder = 'steamapps\common\Counter-Strike Global Offensive'
 # The station mouse's DPI is set once by the admin and remembered. A damaged
 # file is reported and ignored, so it can never block a reset.
 $StationFile = Join-Path $StateDir 'station.json'
-$StationDpi = 0
-$CloudOffConfirmed = $false
-$StationWarning = $null
-if (Test-Path $StationFile) {
-    try {
-        $saved = Get-Content $StationFile -Raw | ConvertFrom-Json
-        $value = 0
-        if ($saved -and $saved.PSObject.Properties['mouseDpi'] -and [int]::TryParse([string]$saved.mouseDpi, [ref]$value) -and $value -ge 50 -and $value -le 32000) {
-            $StationDpi = $value
-        } elseif ($MouseDpi -eq 0) { $StationWarning = "Ignoring $StationFile`: no valid mouseDpi. Run with -MouseDpi to set it." }
-        if ($saved -and $saved.PSObject.Properties['cloudOffConfirmed']) { $CloudOffConfirmed = [bool]$saved.cloudOffConfirmed }
-    } catch { $StationWarning = "Ignoring $StationFile`: $($_.Exception.Message)" }
+# Reads the remembered settings, then applies this command's overrides. Read
+# again after taking the station lock, so a queued command sees the latest file.
+function Read-StationSettings([switch]$Quiet) {
+    $script:StationDpi = 0
+    $script:CloudOffConfirmed = $false
+    $warning = $null
+    if (Test-Path $StationFile) {
+        try {
+            $saved = Get-Content $StationFile -Raw | ConvertFrom-Json
+            $value = 0
+            if ($saved -and $saved.PSObject.Properties['mouseDpi'] -and [int]::TryParse([string]$saved.mouseDpi, [ref]$value) -and $value -ge 50 -and $value -le 32000) {
+                $script:StationDpi = $value
+            } elseif ($MouseDpi -eq 0) { $warning = "Ignoring $StationFile`: no valid mouseDpi. Run with -MouseDpi to set it." }
+            if ($saved -and $saved.PSObject.Properties['cloudOffConfirmed']) { $script:CloudOffConfirmed = [bool]$saved.cloudOffConfirmed }
+        } catch { $warning = "Ignoring $StationFile`: $($_.Exception.Message)" }
+    }
+    if ($MouseDpi -gt 0) { $script:StationDpi = $MouseDpi }
+    if ($ConfirmCloudOff) { $script:CloudOffConfirmed = $true }
+    if ($warning -and -not $Quiet) { [Console]::Error.WriteLine("Loadout: $warning") }
 }
-if ($MouseDpi -gt 0) { $StationDpi = $MouseDpi }
-if ($ConfirmCloudOff) { $CloudOffConfirmed = $true }
-if ($StationWarning) { [Console]::Error.WriteLine("Loadout: $StationWarning") }
+Read-StationSettings
 
 # One station action at a time across windows and command lines on this PC:
 # loads, resets, launches and settings changes all hold this lock.
@@ -316,7 +324,9 @@ function Read-CachedBundle([string]$code) {
 function Get-Bundle([string]$code, [switch]$RequireCache) {
     if ($code -notmatch '^\d{6}$') { throw 'Codes are 6 digits.' }
     # A fresh nonce per request: the signed reply must echo it, so an old reply cannot be replayed.
-    $nonce = -join ((1..16) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
+    $random = New-Object byte[] 16
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($random); $rng.Dispose()
+    $nonce = -join ($random | ForEach-Object { '{0:x2}' -f $_ })
     $query = "?nonce=$nonce" + $(if ($StationDpi -gt 0) { "&dpi=$StationDpi" } else { '' })
     try {
         $r = Invoke-WebRequest -Uri "$($Server.TrimEnd('/'))/api/profiles/$code/station$query" -TimeoutSec 15 -UseBasicParsing
@@ -503,6 +513,7 @@ if ($Reset -or $SaveBaseline -or $Code -or $Launch -or $Prefetch -or $settingsOn
         if ($Reset -or $SaveBaseline -or $Code -or $Launch -or $MouseDpi -gt 0 -or $ConfirmCloudOff) {
             if (-not (Enter-Station $LockWaitMs)) { throw 'Another Loadout window or command is busy on this PC. Try again in a moment.' }
             $locked = $true
+            Read-StationSettings -Quiet
         }
         Save-StationSettings
         if ($MouseDpi -gt 0) { "Saved: this PC's mouse runs at $MouseDpi DPI." }
@@ -528,6 +539,7 @@ if (-not (Enter-Station 0)) {
     [void][Windows.MessageBox]::Show('Loadout is already open on this PC.', 'Loadout')
     exit 0
 }
+Read-StationSettings -Quiet
 Save-StationSettings
 [xml]$xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"

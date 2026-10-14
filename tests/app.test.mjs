@@ -7,7 +7,7 @@ import { Store } from '../server/store.mjs';
 import { createApp } from '../server/server.mjs';
 import { Signer } from '../server/signing.mjs';
 import { checkBindCommand } from '../web/rules.js';
-import { createPublicKey, verify } from 'node:crypto';
+import { createPublicKey, createHash, verify } from 'node:crypto';
 import { importConfig } from '../web/importer.js';
 import { connect } from 'node:net';
 
@@ -224,11 +224,12 @@ test('API: create, load, edit with key, cfg, QR, station bundle', async () => {
     assert.ok(script.includes('<RSAKeyValue><Modulus>'), 'public key baked in');
     const cmd = await (await fetch(`${base}/station.cmd`)).text();
     assert.ok(cmd.split('\r\n').length > 5);
-    assert.ok(launcherScript(cmd).includes(`Invoke-WebRequest '${base}/station.ps1'`));
+    assert.ok(launcherScript(cmd).includes(`Invoke-WebRequest "${base}/station.ps1?nonce=$nonce"`));
     assert.ok(launcherScript(cmd).includes("VerifyData($bytes, 'SHA256'"));
+    assert.match(launcherScript(cmd), /^\$min = 3$/m, 'version floor baked in');
     // fetch() always sends the URL's host, so send a hostile Host header with node:http.
     const odd = (await getRaw(server.address().port, '/station.cmd', { Host: 'evil"&calc&%x%^|:1' })).body.toString();
-    assert.ok(launcherScript(odd).includes("Invoke-WebRequest 'http://evilcalcx:1/station.ps1'"), odd);
+    assert.ok(launcherScript(odd).includes('Invoke-WebRequest "http://evilcalcx:1/station.ps1?nonce=$nonce"'), odd);
     assert.ok(!/[&|^%"]calc/.test(odd));
     assert.equal((await fetch(`${base}/../package.json`)).status, 404);
   } finally {
@@ -325,7 +326,7 @@ test('PUBLIC_URL with a trailing slash still gives working station links', async
   const server = createApp({ store: new Store(':memory:'), lanHost: () => null, publicUrl: 'http://lan.example:8080/' }).listen(0);
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
-    assert.ok(launcherScript(await (await fetch(`${base}/station.cmd`)).text()).includes("'http://lan.example:8080/station.ps1'"));
+    assert.ok(launcherScript(await (await fetch(`${base}/station.cmd`)).text()).includes('"http://lan.example:8080/station.ps1?nonce=$nonce"'));
     assert.ok((await (await fetch(`${base}/station.ps1`)).text()).includes("'http://lan.example:8080'"));
   } finally {
     server.close();
@@ -395,6 +396,11 @@ test('station script and bundles are signed; edit keys are verified; owners can 
       assert.ok(!signedBy(signer, Buffer.concat([r.body, Buffer.from(' ')]), r.headers['x-loadout-signature']), 'tampering detected');
     }
     assert.ok((await getRaw(port, '/station.ps1')).body.toString().includes(signer.publicXml));
+    // Freshness: a signature over the launcher's nonce and the script's hash.
+    const fresh = await getRaw(port, '/station.ps1?nonce=00112233445566778899aabbccddeeff');
+    const hash = createHash('sha256').update(fresh.body).digest('hex');
+    assert.ok(signedBy(signer, Buffer.from(`00112233445566778899aabbccddeeff:${hash}`), fresh.headers['x-loadout-fresh']));
+    assert.equal((await getRaw(port, '/station.ps1')).headers['x-loadout-fresh'], undefined);
     assert.match(signer.fingerprint, /^[0-9A-F]{4}(-[0-9A-F]{4}){3}$/);
     assert.equal((await (await fetch(`${base}/api/info`)).json()).fingerprint, signer.fingerprint);
 
@@ -442,12 +448,12 @@ test('import replaces what the profile had for each key it mentions', () => {
 bind "g" "slot7"
 "bindings"
 {
-	"scancode26"		"<unbound>"
+	"scancode7"		"<unbound>"
 	"w"		"+forward"
 }
 bind "h" "slot6"`, state);
   assert.deepEqual(state.binds, [{ key: 'g', command: 'slot7' }, { key: 'h', command: 'slot6' }], 'g: last mention wins; w back to its default');
-  assert.equal(state.extraCfg, 'unbind "scancode26"', 'native unbind kept; stale bind/unbind lines removed');
+  assert.equal(state.extraCfg, 'unbind "scancode7"', 'native unbind kept; stale bind/unbind lines removed');
 });
 
 test('a partial crosshair import rescales only what it set, and repeats identically', () => {
@@ -468,4 +474,12 @@ test('station bundles name the code, station DPI and request nonce they answer',
     const plain = await (await fetch(`${base}/api/profiles/${code}/station?nonce=bad`)).json();
     assert.deepEqual([plain.stationDpi, plain.nonce], [0, '']);
   } finally { server.close(); }
+});
+
+test('import treats scan codes, letter case and quoted lines as the same key', () => {
+  const state = normalizeProfile({ extraCfg: 'unbind "scancode26"\n"bind" "h" "slot9"' });
+  state.binds = [{ key: 'W', command: 'slot7' }];
+  importConfig('bind "w" "+forward"\nbind "H" "slot6"', state);
+  assert.deepEqual(state.binds, [{ key: 'h', command: 'slot6' }], 'w back to default; H replaces h');
+  assert.equal(state.extraCfg, '', 'the scancode unbind for W and the quoted h bind are gone');
 });
