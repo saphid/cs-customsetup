@@ -56,8 +56,9 @@ $CsFolder = 'steamapps\common\Counter-Strike Global Offensive'
 $StationFile = Join-Path $StateDir 'station.json'
 # Puts $source in place of $target in one step. Move-Item -Force deletes the
 # target first, so a failed move would lose it; File.Replace never does.
+# ([NullString]::Value: PowerShell would pass $null to .NET as an empty path.)
 function Set-FileAtomic([string]$source, [string]$target) {
-    if (Test-Path $target) { [IO.File]::Replace($source, $target, $null) } else { [IO.File]::Move($source, $target) }
+    if (Test-Path $target) { [IO.File]::Replace($source, $target, [NullString]::Value) } else { [IO.File]::Move($source, $target) }
 }
 
 # Reads the remembered settings, then applies this command's overrides. Read

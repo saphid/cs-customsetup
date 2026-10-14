@@ -225,7 +225,7 @@ export function createApp({ store, publicUrl, trustProxy = false, createLimit = 
       '  $tmp = "$store.$PID.tmp"',
       '  [IO.File]::WriteAllText($tmp, (@{ signature = $signature; script = [Convert]::ToBase64String($bytes) } | ConvertTo-Json -Compress))',
       // File.Replace swaps in one step; Move-Item -Force would delete the old store first.
-      '  if (Test-Path $store) { [IO.File]::Replace($tmp, $store, $null) } else { [IO.File]::Move($tmp, $store) }',
+      '  if (Test-Path $store) { [IO.File]::Replace($tmp, $store, [NullString]::Value) } else { [IO.File]::Move($tmp, $store) }',
       '} catch {',
       '  Remove-Item "$store.$PID.tmp" -ErrorAction SilentlyContinue',
       `  Write-Host "Loadout: could not update the station app from ${url} ($($_.Exception.Message)). Using the copy downloaded earlier."`,
