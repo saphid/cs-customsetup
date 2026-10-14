@@ -227,6 +227,9 @@ test('API: create, load, edit with key, cfg, QR, station bundle', async () => {
     assert.ok(launcherScript(cmd).includes(`Invoke-WebRequest "${base}/station.ps1?nonce=$nonce"`));
     assert.ok(launcherScript(cmd).includes("VerifyData($bytes, 'SHA256'"));
     assert.match(launcherScript(cmd), /^\$min = 3$/m, 'version floor baked in');
+    // The launcher's version pattern must find the version in the script it downloads.
+    const pattern = launcherScript(cmd).match(/\[regex\]::Match\([^,]+, '\(\?m\)(.+?)'\)/)[1];
+    assert.equal(new RegExp(pattern, 'm').exec(script)?.[1], '3');
     // fetch() always sends the URL's host, so send a hostile Host header with node:http.
     const odd = (await getRaw(server.address().port, '/station.cmd', { Host: 'evil"&calc&%x%^|:1' })).body.toString();
     assert.ok(launcherScript(odd).includes('Invoke-WebRequest "http://evilcalcx:1/station.ps1?nonce=$nonce"'), odd);

@@ -206,7 +206,7 @@ export function createApp({ store, publicUrl, trustProxy = false, createLimit = 
       "  try { return [bool]$signature -and $rsa.VerifyData($bytes, 'SHA256', [Convert]::FromBase64String($signature)) } catch { return $false }",
       '}',
       'function Get-Version([byte[]]$bytes) {',
-      "  $m = [regex]::Match([Text.Encoding]::UTF8.GetString($bytes), '(?m)^\$StationVersion = (\d+)')",
+      "  $m = [regex]::Match([Text.Encoding]::UTF8.GetString($bytes), '(?m)^\\$StationVersion = (\\d+)')",
       '  if ($m.Success) { [int]$m.Groups[1].Value } else { 0 }',
       '}',
       'try {',
