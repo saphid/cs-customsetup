@@ -435,3 +435,37 @@ test('reads are rate limited; the store has a size cap and retention', async () 
   assert.equal(store.prune(30), 1);
   assert.equal(store.count(), 0);
 });
+
+test('import replaces what the profile had for each key it mentions', () => {
+  const state = normalizeProfile({ binds: [{ key: 'w', command: 'slot7' }], extraCfg: 'bind "h" "slot9"' });
+  importConfig(`unbind "g"
+bind "g" "slot7"
+"bindings"
+{
+	"scancode26"		"<unbound>"
+	"w"		"+forward"
+}
+bind "h" "slot6"`, state);
+  assert.deepEqual(state.binds, [{ key: 'g', command: 'slot7' }, { key: 'h', command: 'slot6' }], 'g: last mention wins; w back to its default');
+  assert.equal(state.extraCfg, 'unbind "scancode26"', 'native unbind kept; stale bind/unbind lines removed');
+});
+
+test('a partial crosshair import rescales only what it set, and repeats identically', () => {
+  const state = normalizeProfile({ crosshair: { thickness: 4, gap: 2 } });
+  const text = 'cl_crosshair_length 4\ncl_crosshair_screen_height 720';
+  importConfig(text, state);
+  importConfig(text, state);
+  assert.deepEqual([state.crosshair.length, state.crosshair.thickness, state.crosshair.gap], [6, 4, 2]);
+});
+
+test('station bundles name the code, station DPI and request nonce they answer', async () => {
+  const server = createApp({ store: new Store(':memory:'), lanHost: () => null }).listen(0);
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const { code } = await (await fetch(`${base}/api/profiles`, { method: 'POST', body: '{"mouse":{"dpi":400,"sensitivity":1}}' })).json();
+    const b = await (await fetch(`${base}/api/profiles/${code}/station?dpi=800&nonce=0123456789abcdef`)).json();
+    assert.deepEqual([b.code, b.stationDpi, b.nonce, b.sensitivity], [code, 800, '0123456789abcdef', 0.5]);
+    const plain = await (await fetch(`${base}/api/profiles/${code}/station?nonce=bad`)).json();
+    assert.deepEqual([plain.stationDpi, plain.nonce], [0, '']);
+  } finally { server.close(); }
+});

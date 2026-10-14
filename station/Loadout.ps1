@@ -66,16 +66,22 @@ if (Test-Path $StationFile) {
 }
 if ($MouseDpi -gt 0) { $StationDpi = $MouseDpi }
 if ($ConfirmCloudOff) { $CloudOffConfirmed = $true }
-if ($MouseDpi -gt 0 -or $ConfirmCloudOff) {
-    New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
-    @{ mouseDpi = $StationDpi; cloudOffConfirmed = $CloudOffConfirmed } | ConvertTo-Json | Set-Content $StationFile -Encoding UTF8
-}
 if ($StationWarning) { [Console]::Error.WriteLine("Loadout: $StationWarning") }
 
-# One station action at a time across windows and command lines on this PC.
+# One station action at a time across windows and command lines on this PC:
+# loads, resets, launches and settings changes all hold this lock.
 $StationMutex = New-Object Threading.Mutex($false, 'Local\LoadoutStation')
+$LockWaitMs = if ($env:LOADOUT_LOCK_WAIT_MS) { [int]$env:LOADOUT_LOCK_WAIT_MS } else { 30000 }   # shorter in tests
 function Enter-Station([int]$waitMs) {
     try { return $StationMutex.WaitOne($waitMs) } catch [Threading.AbandonedMutexException] { return $true }
+}
+
+# Remembers -MouseDpi and -ConfirmCloudOff. Call only while holding the lock.
+function Save-StationSettings {
+    if ($MouseDpi -le 0 -and -not $ConfirmCloudOff) { return }
+    New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+    @{ mouseDpi = $StationDpi; cloudOffConfirmed = $CloudOffConfirmed } | ConvertTo-Json | Set-Content "$StationFile.tmp" -Encoding UTF8
+    Move-Item "$StationFile.tmp" $StationFile -Force
 }
 
 # ---------------------------------------------------------------- signatures
@@ -276,8 +282,18 @@ function Restore-Baseline {
 # while the server is down.
 function Save-CachedBundle([string]$code, [byte[]]$bytes, [string]$signature) {
     New-Item -ItemType Directory -Force -Path $CacheDir | Out-Null
-    [pscustomobject]@{ saved = (Get-Date).ToString('o'); dpi = $StationDpi; signature = $signature; body = [Convert]::ToBase64String($bytes) } |
-        ConvertTo-Json | Set-Content (Join-Path $CacheDir "$code.json") -Encoding UTF8
+    $file = Join-Path $CacheDir "$code.json"
+    [pscustomobject]@{ saved = (Get-Date).ToString('o'); signature = $signature; body = [Convert]::ToBase64String($bytes) } |
+        ConvertTo-Json | Set-Content "$file.tmp" -Encoding UTF8
+    Move-Item "$file.tmp" $file -Force
+}
+
+# The signed body names the code and station DPI it was made for; a bundle for
+# anything else (a swapped or replayed response) is refused.
+function Assert-BundleFor($bundle, [string]$code) {
+    if ([string]$bundle.code -ne $code) { throw "The server sent a setup for code $($bundle.code), not $code, so it was not applied." }
+    if ([int]$bundle.stationDpi -ne $StationDpi) { throw "Setup $code was converted for a $($bundle.stationDpi) DPI mouse, but this PC's mouse is set to $StationDpi DPI." }
+    if ($bundle.PSObject.Properties['game'] -and $bundle.game -ne 'cs2') { throw "Setup $code is for $($bundle.game), not Counter-Strike 2." }
 }
 
 function Read-CachedBundle([string]$code) {
@@ -288,8 +304,8 @@ function Read-CachedBundle([string]$code) {
         $bytes = [Convert]::FromBase64String($entry.body)
         if (-not (Test-Signature $bytes $entry.signature)) { return $null }
         $bundle = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
+        Assert-BundleFor $bundle $code
         $note = "! The server is unreachable: loaded the copy of this setup saved on this PC at $(([datetime]$entry.saved).ToString('HH:mm, d MMM')). Changes made after that are missing."
-        if ([int]$entry.dpi -ne $StationDpi) { $note += ' It was converted for a different mouse DPI; ask the admin.' }
         $bundle | Add-Member -NotePropertyName cachedNote -NotePropertyValue $note
         return $bundle
     } catch { return $null }
@@ -297,9 +313,11 @@ function Read-CachedBundle([string]$code) {
 
 # Downloads a setup and checks its signature. Falls back to the cache only
 # when the server cannot be reached (never for an unknown or outdated code).
-function Get-Bundle([string]$code) {
+function Get-Bundle([string]$code, [switch]$RequireCache) {
     if ($code -notmatch '^\d{6}$') { throw 'Codes are 6 digits.' }
-    $query = if ($StationDpi -gt 0) { "?dpi=$StationDpi" } else { '' }
+    # A fresh nonce per request: the signed reply must echo it, so an old reply cannot be replayed.
+    $nonce = -join ((1..16) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
+    $query = "?nonce=$nonce" + $(if ($StationDpi -gt 0) { "&dpi=$StationDpi" } else { '' })
     try {
         $r = Invoke-WebRequest -Uri "$($Server.TrimEnd('/'))/api/profiles/$code/station$query" -TimeoutSec 15 -UseBasicParsing
     } catch {
@@ -318,8 +336,11 @@ function Get-Bundle([string]$code) {
         throw "The setup from $Server failed its signature check, so it was not applied. Admin: download Loadout.cmd again from the server's admin page."
     }
     $bundle = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
-    if ($bundle.PSObject.Properties['game'] -and $bundle.game -ne 'cs2') { throw "Setup $code is for $($bundle.game), not Counter-Strike 2." }
-    try { Save-CachedBundle $code $bytes $signature } catch { }
+    Assert-BundleFor $bundle $code
+    if ([string]$bundle.nonce -ne $nonce) { throw "The setup from $Server did not answer this request, so it was not applied." }
+    # A load goes ahead even if caching fails; a prefetch must not.
+    try { Save-CachedBundle $code $bytes $signature }
+    catch { if ($RequireCache) { throw "could not save it on this PC: $($_.Exception.Message)" } }
     return $bundle
 }
 
@@ -432,7 +453,7 @@ function Get-Readiness {
         if ($videos.Count) { Add 'OK' 'CS2 first run' 'video settings file found, so resolutions can be set' }
         else { Add 'FAIL' 'CS2 first run' 'start CS2 once on the station account and quit, so players get their resolution' }
         $cloud = Get-Cs2CloudSetting $steam
-        if ($cloud -eq 'off' -or $CloudOffConfirmed) { Add 'OK' 'Steam Cloud for CS2' $(if ($cloud -eq 'off') { 'off' } else { 'confirmed off by the admin' }) }
+        if ($cloud -eq 'off' -or ($cloud -eq 'unknown' -and $CloudOffConfirmed)) { Add 'OK' 'Steam Cloud for CS2' $(if ($cloud -eq 'off') { 'off' } else { 'confirmed off by the admin' }) }
         elseif ($cloud -eq 'on') { Add 'FAIL' 'Steam Cloud for CS2' 'on: turn it off (Steam > CS2 > Properties > General), or reset leaves the last player''s settings in the cloud' }
         else { Add 'WARN' 'Steam Cloud for CS2' 'could not tell: turn it off in Steam > CS2 > Properties > General, then run Loadout.cmd -ConfirmCloudOff' }
     }
@@ -455,9 +476,14 @@ function Invoke-Prefetch([string[]]$codes) {
     if ($list.Count -eq 1 -and (Test-Path $list[0])) { $list = @((Get-Content $list[0]) -split '[,\s]+' | Where-Object { $_ }) }
     $ok = 0; $failed = @()
     foreach ($c in $list) {
-        try { [void](Get-Bundle $c); $ok++ } catch { $failed += "$c ($($_.Exception.Message))" }
+        try {
+            $b = Get-Bundle $c -RequireCache
+            if ($b.PSObject.Properties['cachedNote']) { throw 'the server is unreachable' }
+            $ok++
+        } catch { $failed += "$c ($($_.Exception.Message))" }
     }
-    "Cached $ok setup(s) on this PC." + $(if ($failed) { " Not cached: $($failed -join '; ')" } else { '' })
+    "Cached $ok setup(s) on this PC."
+    if ($failed) { throw "Not cached: $($failed -join '; ')" }
 }
 
 # ---------------------------------------------------------------- command line
@@ -470,10 +496,18 @@ if ($Check) {
     exit 0
 }
 
-if ($Reset -or $SaveBaseline -or $Code -or $Launch -or $Prefetch) {
+$settingsOnly = ($MouseDpi -gt 0 -or $ConfirmCloudOff) -and -not ($Reset -or $SaveBaseline -or $Code -or $Launch -or $Prefetch)
+if ($Reset -or $SaveBaseline -or $Code -or $Launch -or $Prefetch -or $settingsOnly) {
+    $locked = $false
     try {
+        if ($Reset -or $SaveBaseline -or $Code -or $Launch -or $MouseDpi -gt 0 -or $ConfirmCloudOff) {
+            if (-not (Enter-Station $LockWaitMs)) { throw 'Another Loadout window or command is busy on this PC. Try again in a moment.' }
+            $locked = $true
+        }
+        Save-StationSettings
+        if ($MouseDpi -gt 0) { "Saved: this PC's mouse runs at $MouseDpi DPI." }
+        if ($ConfirmCloudOff) { 'Saved: Steam Cloud is off for CS2 on this PC.' }
         if ($Prefetch) { Invoke-Prefetch $Prefetch }
-        if (($Reset -or $SaveBaseline -or $Code) -and -not (Enter-Station 30000)) { throw 'Another Loadout window or command is busy on this PC. Try again in a moment.' }
         if ($Reset) { Restore-Baseline }
         elseif ($SaveBaseline) { Save-StationBaseline }
         elseif ($Code) { Invoke-Apply $Code | Out-Null }
@@ -481,12 +515,10 @@ if ($Reset -or $SaveBaseline -or $Code -or $Launch -or $Prefetch) {
     } catch {
         [Console]::Error.WriteLine("Loadout: $($_.Exception.Message)")
         exit 1
+    } finally {
+        if ($locked) { $StationMutex.ReleaseMutex() }
     }
     return
-}
-if ($MouseDpi -gt 0 -or $ConfirmCloudOff) {
-    if ($MouseDpi -gt 0) { "Saved: this PC's mouse runs at $MouseDpi DPI." }
-    if ($ConfirmCloudOff) { 'Saved: Steam Cloud is off for CS2 on this PC.' }
 }
 
 # ---------------------------------------------------------------- window
@@ -496,6 +528,7 @@ if (-not (Enter-Station 0)) {
     [void][Windows.MessageBox]::Show('Loadout is already open on this PC.', 'Loadout')
     exit 0
 }
+Save-StationSettings
 [xml]$xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"

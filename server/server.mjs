@@ -18,8 +18,11 @@ const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; ch
 
 const LOOPBACK = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?$/i;
 
-// The first private IPv4 address of this machine, for links opened on other devices.
+// The first private IPv4 address of this machine, for links opened on other
+// devices. Inside a container that address is the container's own, which
+// phones cannot reach, so the image sets LOADOUT_IN_CONTAINER and needs PUBLIC_URL.
 function lanAddress() {
+  if (process.env.LOADOUT_IN_CONTAINER) return null;
   for (const list of Object.values(networkInterfaces())) {
     for (const a of list || []) if (a.family === 'IPv4' && !a.internal) return a.address;
   }
@@ -156,7 +159,11 @@ export function createApp({ store, publicUrl, trustProxy = false, createLimit = 
         { 'Content-Disposition': `attachment; filename="cssetup_${code}.cfg"` });
     }
     store.countLoad(code);
-    return sendSigned(res, JSON.stringify(stationBundle(profile, code, { stationDpi })), 'application/json; charset=utf-8');
+    // What the station asked for is part of the signed body, so a signed
+    // response for another code, another DPI or an earlier request is refused.
+    const nonce = /^[0-9a-f]{16,64}$/.test(query.get('nonce') || '') ? query.get('nonce') : '';
+    const bundle = { ...stationBundle(profile, code, { stationDpi }), stationDpi: stationDpi || 0, nonce, issuedAt: new Date().toISOString() };
+    return sendSigned(res, JSON.stringify(bundle), 'application/json; charset=utf-8');
   }
 
   // Server address for scripts: only URL characters, so it cannot break out of a quoted string.
@@ -178,19 +185,24 @@ export function createApp({ store, publicUrl, trustProxy = false, createLimit = 
     const url = scriptUrl(req);
     const update = [
       "$ErrorActionPreference = 'Stop'",
-      "$f = Join-Path $env:LOADOUT_DIR 'Loadout.ps1'",
+      "$f = Join-Path $env:LOADOUT_DIR 'Loadout.ps1'; $sig = \"$f.sig\"",
+      '$rsa = New-Object Security.Cryptography.RSACryptoServiceProvider',
+      `$rsa.FromXmlString('${signer.publicXml}')`,
+      'function Test-Signed([byte[]]$bytes, [string]$signature) {',
+      "  try { return [bool]$signature -and $rsa.VerifyData($bytes, 'SHA256', [Convert]::FromBase64String($signature)) } catch { return $false }",
+      '}',
       'try {',
       `  $r = Invoke-WebRequest '${url}/station.ps1' -UseBasicParsing -TimeoutSec 10`,
-      '  $bytes = $r.RawContentStream.ToArray()',
-      '  $rsa = New-Object Security.Cryptography.RSACryptoServiceProvider',
-      `  $rsa.FromXmlString('${signer.publicXml}')`,
-      "  if (-not $rsa.VerifyData($bytes, 'SHA256', [Convert]::FromBase64String([string]$r.Headers['X-Loadout-Signature']))) { throw 'the download failed its signature check' }",
-      "  [IO.File]::WriteAllBytes(\"$f.download\", $bytes); Move-Item \"$f.download\" $f -Force",
+      '  $bytes = $r.RawContentStream.ToArray(); $signature = [string]$r.Headers[\'X-Loadout-Signature\']',
+      "  if (-not (Test-Signed $bytes $signature)) { throw 'the download failed its signature check' }",
+      "  [IO.File]::WriteAllBytes(\"$f.download\", $bytes); [IO.File]::WriteAllText(\"$sig.download\", $signature)",
+      '  Move-Item "$f.download" $f -Force; Move-Item "$sig.download" $sig -Force',
       '} catch {',
-      `  Write-Host "Loadout: could not update the station app from ${url} ($($_.Exception.Message))."`,
-      "  if (-not (Test-Path $f)) { Write-Host 'Download Loadout.cmd again from the admin page.'; exit 1 }",
-      "  Write-Host 'Using the copy downloaded earlier.'",
+      `  Write-Host "Loadout: could not update the station app from ${url} ($($_.Exception.Message)). Using the copy downloaded earlier."`,
       '}',
+      // The copy about to run must carry this server's signature, every time.
+      "$ok = (Test-Path $f) -and (Test-Path $sig) -and (Test-Signed ([IO.File]::ReadAllBytes($f)) ([IO.File]::ReadAllText($sig).Trim()))",
+      "if (-not $ok) { Write-Host 'Loadout: no verified copy of the station app on this PC. Download Loadout.cmd again from the admin page.'; exit 1 }",
     ].join('\n');
     const lines = [
       '@echo off',

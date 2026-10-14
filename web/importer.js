@@ -42,6 +42,10 @@ export function importConfig(text, state) {
   const extra = []; const notes = new Set(); const refused = [];
   const video = {};
   let screenHeight = null;
+  const sizesSet = new Set();      // modern pixel sizes this import set (only these follow its reference height)
+  // Final state of every key this import mentions: { command } | { unbind: true } | { default: true }.
+  // The last mention wins, and the plan replaces whatever the profile had for that key.
+  const keyPlan = new Map();
   const clamp = (path, v) => {
     const [lo, hi, , integer] = NUMBERS[path];
     const out = Math.min(hi, Math.max(lo, integer ? Math.round(v) : v));
@@ -51,10 +55,11 @@ export function importConfig(text, state) {
   const addBind = (rawKey, command) => {
     const key = rawKey.toLowerCase();
     if (!KEY_NAME.test(key)) { refused.push(`${rawKey} (not a key name)`); return; }
+    if (UNBOUND.has(command)) { keyPlan.set(key, { unbind: true }); return; }
+    if (DEFAULT_BINDS[key] === command) { keyPlan.set(key, { default: true }); return; }
     const problem = checkBindCommand(command);
     if (problem) { refused.push(`${rawKey} → ${command} (${problem})`); return; }
-    state.binds = state.binds.filter((x) => x.key !== key).concat({ key, command });
-    applied++;
+    keyPlan.set(key, { command });
   };
   const tokens = (line) => [...line.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]);
   const sections = []; let pending = null;
@@ -67,13 +72,7 @@ export function importConfig(text, state) {
     if (raw === '}') { sections.pop(); continue; }
     const whole = tokens(raw);
     if (whole.length === 1 && /^"[^"]*"$/.test(raw)) { pending = whole[0].toLowerCase(); continue; }
-    if (sections.at(-1) === 'bindings' && whole.length === 2) {
-      const [key, command] = whole;
-      const k = key.toLowerCase();
-      if (UNBOUND.has(command)) { if (DEFAULT_BINDS[k]) { extra.push(`unbind "${k}"`); } }
-      else if (DEFAULT_BINDS[k] !== command) addBind(key, command);
-      continue;
-    }
+    if (sections.at(-1) === 'bindings' && whole.length === 2) { addBind(whole[0], whole[1]); continue; }
     for (const part of raw.split(/;(?=(?:[^"]*"[^"]*")*[^"]*$)/)) {
       const [cmd, a, b] = tokens(part.trim());
       if (!cmd) continue;
@@ -84,6 +83,7 @@ export function importConfig(text, state) {
         continue;
       }
       if (name === 'bind' && a && b !== undefined) { addBind(a, b); continue; }
+      if (name === 'unbind' && a && b === undefined) { addBind(a, ''); continue; }
       if (name === 'cl_crosshair_screen_height' && a && NUMBER.test(a) && +a >= 240) { screenHeight = +a; applied++; continue; }
       if (name === 'cl_crosshairgap' && a !== undefined) {
         notes.add(`Your old crosshair gap (${a}) has no exact equivalent in today's CS2; set Gap using the preview.`);
@@ -106,7 +106,7 @@ export function importConfig(text, state) {
         const current = getPath(state, path);
         if (typeof current === 'boolean') setPath(state, path, a !== '0' && a !== 'false');
         else if (path === 'misc.showFps' && /^(true|false)$/.test(a)) setPath(state, path, a === 'true' ? 1 : 0);
-        else if (NUMBER.test(a)) setPath(state, path, clamp(path, +a));
+        else if (NUMBER.test(a)) { setPath(state, path, clamp(path, +a)); if (PIXEL_SIZES.includes(path)) sizesSet.add(path); }
         else { skipped++; continue; }
         applied++; continue;
       }
@@ -128,14 +128,26 @@ export function importConfig(text, state) {
     applied++;
   }
   // Crosshair sizes are stored for a 1080-pixel reference height.
-  if (screenHeight && screenHeight !== 1080) {
-    for (const path of PIXEL_SIZES) setPath(state, path, clamp(path, Math.round(getPath(state, path) * 1080 / screenHeight)));
+  if (screenHeight && screenHeight !== 1080 && sizesSet.size) {
+    for (const path of sizesSet) setPath(state, path, clamp(path, Math.round(getPath(state, path) * 1080 / screenHeight)));
     notes.add(`Crosshair sizes were made at ${screenHeight}p and converted to the 1080p scale used here.`);
   }
-  if (extra.length) {
-    const existing = state.extraCfg ? state.extraCfg.split('\n') : [];
-    const names = new Set(extra.map((l) => l.split(' ').slice(0, l.startsWith('unbind') ? 2 : 1).join(' ')));
-    const nameOf = (l) => l.split(/\s+/).slice(0, l.startsWith('unbind') ? 2 : 1).join(' ');
+  // Keys: drop whatever the profile had for each imported key (custom binds and
+  // bind/unbind extra lines), then apply the imported result.
+  const keyOf = (line) => { const m = line.match(/^\s*(?:bind|unbind)\s+"?([^"\s]+)"?/i); return m && m[1].toLowerCase(); };
+  let existing = state.extraCfg ? state.extraCfg.split('\n') : [];
+  if (keyPlan.size) {
+    state.binds = state.binds.filter((b) => !keyPlan.has(b.key));
+    existing = existing.filter((l) => !keyPlan.has(keyOf(l)));
+    for (const [key, plan] of keyPlan) {
+      if (plan.command) state.binds.push({ key, command: plan.command });
+      else if (plan.unbind) extra.push(`unbind "${key}"`);
+      applied++;
+    }
+  }
+  if (extra.length || keyPlan.size) {
+    const nameOf = (l) => keyOf(l) ? `key ${keyOf(l)}` : l.split(/\s+/)[0];
+    const names = new Set(extra.map(nameOf));
     state.extraCfg = existing.filter((l) => !names.has(nameOf(l))).concat(extra).slice(0, 200).join('\n');
   }
   if (adjusted) notes.add(`${adjusted} value${adjusted === 1 ? ' was' : 's were'} outside CS2's limits and adjusted.`);

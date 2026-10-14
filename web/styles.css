@@ -120,7 +120,7 @@ pre.cfg { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg);
   padding: 10px 16px; border-radius: 10px; font-size: 14px; z-index: 9; }
 
 /* Round 1 review: accessibility, touch targets, mobile layout */
-:root { --dim: #97a2b1; --field-line: #3a4454; }
+:root { --dim: #97a2b1; --field-line: #6a7586; }
 .field small { color: var(--muted); }
 input[type=text], input[type=number], select, textarea { border-color: var(--field-line); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
@@ -163,7 +163,10 @@ kbd { font-family: ui-monospace, Consolas, monospace; color: var(--text); backgr
 .qr { width: 220px; }
 /* Phones: keep the crosshair preview in view while adjusting it. */
 @media (max-width: 640px) {
-  .preview-wrap { position: sticky; top: 64px; z-index: 3; background: var(--panel); padding: 6px 0; }
+  .preview-wrap { position: sticky; top: 86px; z-index: 3; background: var(--panel); padding: 6px 0; }
   .preview-wrap .preview { max-width: 170px; }
 }
 .qr img { height: auto; }
+/* Round 2: every touch target at least 44px tall. */
+.btn.small, .chip, .range input[type=number], .bind input, .bind button { min-height: 44px; }
+.preview .bgs button { width: 44px; height: 44px; }

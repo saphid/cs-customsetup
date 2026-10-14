@@ -1,6 +1,6 @@
 FROM node:24-alpine
 WORKDIR /app
-ENV NODE_ENV=production PORT=8080 DB_FILE=/data/profiles.db
+ENV NODE_ENV=production PORT=8080 DB_FILE=/data/profiles.db LOADOUT_IN_CONTAINER=1
 COPY package.json pnpm-lock.yaml ./
 RUN corepack enable && pnpm install --prod --frozen-lockfile
 COPY server server

@@ -32,7 +32,20 @@ try {
     $cmdOk = $LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $dir 'Loadout.ps1')) -and -not (Test-Path (Join-Path $dir 'Loadout.ps1.download'))
     Write-Host ($(if ($cmdOk) { 'PASS ' } else { 'FAIL ' }) + 'Loadout.cmd downloads the station script and runs it')
     if (-not $cmdOk) { Write-Host "     $cmdOut" }
-    if (-not $report.passed -or -not $cmdOk) { exit 1 }
+    # Server down: the launcher runs the verified copy, and refuses a tampered one.
+    Stop-Process -Id $node.Id -Force; Start-Sleep 1
+    $ps1 = Join-Path $dir 'Loadout.ps1'; $original = [IO.File]::ReadAllBytes($ps1)
+    $offOut = & cmd.exe /c "`"$(Join-Path $dir 'Loadout.cmd')`" -Reset" 2>&1 | Out-String
+    $offOk = $LASTEXITCODE -eq 0
+    [IO.File]::AppendAllText($ps1, "`r`nWrite-Host 'tampered'`r`n")
+    $badOut = & cmd.exe /c "`"$(Join-Path $dir 'Loadout.cmd')`" -Reset" 2>&1 | Out-String
+    $badOk = $LASTEXITCODE -ne 0 -and $badOut -match 'no verified copy' -and $badOut -notmatch 'tampered'
+    [IO.File]::WriteAllBytes($ps1, $original)
+    foreach ($c in @(@('Launcher runs the verified copy while the server is down', $offOk, $offOut), @('Launcher refuses a tampered copy', $badOk, $badOut))) {
+        Write-Host ($(if ($c[1]) { 'PASS ' } else { 'FAIL ' }) + $c[0])
+        if (-not $c[1]) { Write-Host "     $($c[2])" }
+    }
+    if (-not $report.passed -or -not $cmdOk -or -not $offOk -or -not $badOk) { exit 1 }
 } finally {
     Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue
 }

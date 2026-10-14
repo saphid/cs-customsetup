@@ -108,7 +108,37 @@ Check 'offline: cached setup loads with a warning' ($r.code -eq 0 -and $r.text -
 $r = Station @('-Code', '999999', '-Server', 'http://127.0.0.1:9')   # never loaded here, so not cached
 Check 'offline: uncached setup fails cleanly' ($r.code -eq 1 -and $r.text -match 'Could not reach') $r.text
 
+# A cached setup renamed to another code is refused (the signed body names its code).
+$cache = Join-Path $env:LOADOUT_STATE_DIR 'cache'
+Copy-Item (Join-Path $cache "$CodeA.json") (Join-Path $cache '999998.json')
+$r = Station @('-Code', '999998', '-Server', 'http://127.0.0.1:9')
+Check 'offline: renamed cache entry refused' ($r.code -eq 1 -and $r.text -match 'Could not reach') $r.text
+Remove-Item (Join-Path $cache '999998.json')
+
+# Prefetch reports failures with a nonzero exit code.
+$r = Station @('-Prefetch', "$CodeA,000000")
+Check 'prefetch: partial failure is an error' ($r.code -eq 1 -and $r.text -match 'Cached 1 setup' -and $r.text -match '000000') $r.text
+
+# Another station process holds the lock: launch and settings changes wait, then give up untouched.
+$env:LOADOUT_LOCK_WAIT_MS = '500'
+$held = New-Object Threading.Mutex($false, 'Local\LoadoutStation')
+[void]$held.WaitOne()
+$settingsBefore = Read (Join-Path $env:LOADOUT_STATE_DIR 'station.json')
+$r1 = Station @('-Launch')
+$r2 = Station @('-MouseDpi', '1600')
+$held.ReleaseMutex(); $held.Dispose()
+Remove-Item Env:\LOADOUT_LOCK_WAIT_MS
+Check 'lock: launch refused while busy' ($r1.code -eq 1 -and $r1.text -match 'busy') $r1.text
+Check 'lock: settings unchanged while busy' ($r2.code -eq 1 -and (Read (Join-Path $env:LOADOUT_STATE_DIR 'station.json')) -eq $settingsBefore) $r2.text
+
 # Admin readiness report.
+$shared = Join-Path $steam 'userdata\123456789\7\remote'
+New-Item -ItemType Directory -Force $shared | Out-Null
+[IO.File]::WriteAllText((Join-Path $shared 'sharedconfig.vdf'), "`"UserRoamingConfigStore`"`n{`n`t`"Software`"`n`t{`n`t`t`"Valve`"`n`t`t{`n`t`t`t`"Steam`"`n`t`t`t{`n`t`t`t`t`"Apps`"`n`t`t`t`t{`n`t`t`t`t`t`"730`"`n`t`t`t`t`t{`n`t`t`t`t`t`t`"cloudenabled`"`t`t`"1`"`n`t`t`t`t`t}`n`t`t`t`t}`n`t`t`t}`n`t`t}`n`t}`n}`n")
+$r = Station @('-ConfirmCloudOff')
+$r = Station @('-Check')
+Check 'check: Steam Cloud detected on fails despite confirmation' ($r.code -eq 2 -and $r.text -match 'FAIL\s+Steam Cloud for CS2') $r.text
+Remove-Item (Join-Path $steam 'userdata\123456789\7') -Recurse -Force
 $r = Station @('-Check')
 Check 'check: readiness report' (($r.code -eq 0 -or $r.code -eq 2) -and $r.text -match 'Mouse DPI' -and $r.text -match 'Steam Cloud for CS2' -and $r.text -match 'OK\s+Station app') $r.text
 Remove-Item (Join-Path $env:LOADOUT_STATE_DIR 'station.json')

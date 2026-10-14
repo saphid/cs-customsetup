@@ -72,6 +72,7 @@ let flash = '';              // one-off message for the next page
 
 function route() {
   pageListeners.abort();     // drop the previous page's handlers and requests
+  view.inert = false;        // a save in progress on the previous page froze it
   pageListeners = new AbortController();
   routeGen++;
   const hash = location.hash.slice(1) || '/';
@@ -147,7 +148,6 @@ const BIND_PRESETS = [
   ['Smoke on 4', '4', 'slot8'],
   ['HE on C', 'c', 'slot6'],
   ['Molotov on Z', 'z', 'slot10'],
-  ['Drop bomb on N', 'n', 'drop'],
   ['Inspect on V', 'v', '+lookatweapon'],
 ];
 const RESOLUTIONS = [
@@ -187,12 +187,17 @@ async function editExisting(code) {
 function editor(code, saved) {
   const draft = storage.get(draftKey(code));
   let state = merge(DEFAULTS, draft || saved || {});
+  // A copy of someone's setup arrives as a draft marked with its source code.
+  const copiedFrom = !code && draft?.copiedFrom;
+  delete state.copiedFrom;
   if (typeof state.misc.showFps === 'boolean') state.misc.showFps = +state.misc.showFps;   // drafts from before FPS modes
   const mine = !code || !!keys.get(code);
   view.innerHTML = `
     <h1 style="margin:8px 0 6px">${code ? `Edit setup ${code}` : 'Build your setup'}</h1>
-    <p class="hint lead">Everything starts at CS2's defaults. Change what matters to you and press Save.</p>
-    ${draft ? `<div class="callout warn draft" role="status"><b>${code ? 'Unsaved changes restored.' : 'Continuing your unsaved setup.'}</b>
+    <p class="hint lead">${code ? 'Change anything, then press Save changes. Your code stays the same.'
+      : copiedFrom ? `Copied from setup ${esc(copiedFrom)}. Change what you like and save to get your own code.`
+      : "Everything starts at CS2's defaults. Change what matters to you and press Save."}</p>
+    ${draft && !copiedFrom ? `<div class="callout warn draft" role="status"><b>${code ? 'Unsaved changes restored.' : 'Continuing your unsaved setup.'}</b>
       <button class="btn small" type="button" id="discardDraft">${code ? 'Discard changes' : 'Start fresh'}</button></div>` : ''}
     ${code && !mine ? `<div class="callout warn" role="status"><b>This device can't save changes to ${code}.</b><p class="hint" style="margin:6px 0 0">Open your edit link on this device first, or use this setup as a starting point for a new code.</p></div>` : ''}
     <nav class="jump" aria-label="Sections">${[['mouse', 'Mouse'], ['crosshair', 'Crosshair'], ['video', 'Video'], ['binds', 'Binds'], ['more', 'More']]
@@ -440,24 +445,31 @@ function editor(code, saved) {
     clearErrors();
     const problem = firstProblem();
     if (problem) { showError(...problem); return; }
-    btn.disabled = true;
+    // The form is frozen while saving, so what was sent is exactly what the draft holds.
+    const gen = routeGen;
+    btn.disabled = true; view.inert = true; btn.textContent = 'Saving…';
     const payload = clone(state);
     payload.binds = payload.binds.filter((b) => b.key.trim() || b.command.trim());
     try {
+      let saved = code;
       if (code) {
         await api(`/api/profiles/${code}`, { method: 'PUT', body: JSON.stringify(payload), headers: { 'X-Edit-Key': keys.get(code) || '' } });
-        storage.del(draftKey(code));
-        location.hash = `#/done/${code}`;
       } else {
         const res = await api('/api/profiles', { method: 'POST', body: JSON.stringify(payload) });
         keys.set(res.code, res.editKey);            // kept in memory even if storage fails; the next page says so
-        storage.del(draftKey(null));
-        location.hash = `#/done/${res.code}`;
+        saved = res.code;
       }
+      storage.del(draftKey(code));
+      // Only move on if the player is still on this page.
+      if (gen === routeGen) location.hash = `#/done/${saved}`;
+      else toast(code ? `Setup ${code} saved` : `Saved: your code is ${saved}`);
     } catch (e) {
+      if (gen !== routeGen) { toast(`Not saved: ${e.message}`); return; }
       if (e.field) showError(e.field, e.message);
       else bar.querySelector('#saveError').textContent = e.message;
-    } finally { btn.disabled = false; }
+    } finally {
+      view.inert = false; btn.disabled = false; btn.textContent = code ? 'Save changes' : 'Save & get my code';
+    }
   }, { signal: signal() });
 
   sync();
@@ -510,7 +522,7 @@ function drawCrosshair(canvas, c) {
 const copyBox = (id, value) => `<input class="copybox" id="${id}" type="text" readonly value="${esc(value)}" aria-label="Edit link">`;
 
 async function doneView(code) {
-  await current(infoReady);
+  if (!(await current(infoReady))) return;
   const key = keys.get(code);
   const editLink = `${info.url}/#/p/${code}?k=${key}`;
   const unsaved = key && !keys.isStored(code);
@@ -537,7 +549,8 @@ async function doneView(code) {
     try { await navigator.clipboard.writeText(editLink); toast('Edit link copied'); }
     catch {
       const box = view.querySelector('#copyFallback');
-      box.innerHTML = `<p class="hint" style="margin:10px 0 6px">Copy it from here (press and hold, then Copy):</p>${copyBox('editLinkBox', editLink)}`;
+      const how = matchMedia('(pointer: coarse)').matches ? 'press and hold it, then Copy' : 'press Ctrl+C (⌘C on a Mac)';
+      box.innerHTML = `<p class="hint" style="margin:10px 0 6px">The link is selected below: ${how}.</p>${copyBox('editLinkBox', editLink)}`;
       box.querySelector('input').select();
     }
   }, { signal: signal() });
@@ -592,14 +605,14 @@ async function profileView(code) {
     ${typeof cfg === 'string' ? `<details class="rawcfg"><summary>Show the config file</summary><pre class="cfg">${esc(cfg)}</pre></details>` : `<div class="callout warn"><b>Needs saving again</b><p class="hint" style="margin:6px 0 0">${esc(cfg.error)}${mine ? ' Press Edit, fix anything marked, and save.' : ''}</p></div>`}`;
   drawCrosshair(view.querySelector('#xc'), p.crosshair);
   view.querySelector('#copy')?.addEventListener('click', () => {
-    const copy = clone(p); copy.name = ''; copy.team = '';
+    const copy = clone(p); copy.name = ''; copy.team = ''; copy.copiedFrom = code;
     storage.put(draftKey(null), copy);
     location.hash = '#/new';
   }, { signal: signal() });
 }
 
 async function stationDoc() {
-  await current(infoReady);
+  if (!(await current(infoReady))) return;
   const url = info.url;
   view.innerHTML = `<div class="doc">
     <h1>Set up the tournament PCs</h1>

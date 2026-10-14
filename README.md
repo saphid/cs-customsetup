@@ -52,26 +52,30 @@ tournament PCs (Windows 10/11) for the station.
 **1. Start the server** (any machine with Docker):
 
 ```sh
-docker run -d --name loadout -p 8080:8080 -v loadout:/data --restart unless-stopped ghcr.io/saphid/loadout
+docker run -d --name loadout -p 8080:8080 -v loadout:/data --restart unless-stopped \
+  -e PUBLIC_URL=http://<this machine's LAN address>:8080 ghcr.io/saphid/loadout
 ```
 
-The image runs on x86-64 and ARM64 (including Raspberry Pi 4/5 with a 64-bit OS). Or without Docker (Node 22.13+): `git clone https://github.com/saphid/loadout && cd loadout && npx pnpm install && npx pnpm start`
+`PUBLIC_URL` is the address phones and tournament PCs use: QR codes and the
+station app point there. The image runs on x86-64 and ARM64 (including Raspberry Pi 4/5 with a 64-bit OS). Or without Docker (Node 22.13+): `git clone https://github.com/saphid/loadout && cd loadout && npx pnpm install && npx pnpm start`
 (listens on port 8787).
 
 **2. Players** open `http://<server>:8080` on their phone, build their setup and
 save. They get a 6-digit code and a QR code. Put that address (or a QR code
 for it) on a sign at the registration desk.
 
-**3. Each tournament PC:** open `http://<server>:8080/#/station`, download
-**Loadout.cmd**, set the station mouse DPI once, and start it:
+**3. Each tournament PC:** turn Steam Cloud off for CS2 on the station Steam
+account, start CS2 once and quit, then open `http://<server>:8080/#/station`,
+download **Loadout.cmd**, and run once in a command prompt:
 
 ```bat
-Loadout.cmd -MouseDpi 800
+Loadout.cmd -MouseDpi 800 -ConfirmCloudOff
+Loadout.cmd -Check
 ```
 
-Players type their code and press Launch CS2. **Done playing — reset this PC**
-puts the PC back. Before the event, also turn Steam Cloud off for CS2 on the
-station Steam accounts (see Counter-Strike 2 below).
+`-Check` lists anything still missing. Then double-click Loadout.cmd: players
+type their code, press Load setup, then Launch CS2. **Done playing — reset this
+PC** puts the PC back.
 
 For an internet-facing server, put it behind HTTPS and set `PUBLIC_URL`
 (see compose.yaml).
@@ -146,7 +150,7 @@ passes its arguments through:
 
 ```bat
 Loadout.cmd                          :: full-screen window
-Loadout.cmd -MouseDpi 800            :: once per PC: the station mouse's DPI (remembered)
+Loadout.cmd -MouseDpi 800            :: once per PC: the station mouse's DPI (remembered, then exits)
 Loadout.cmd -ConfirmCloudOff         :: record that Steam Cloud is off for CS2
 Loadout.cmd -Check                   :: readiness report (exit code 2 when not ready)
 Loadout.cmd -Code 123456 -Launch     :: load a setup and start CS2
