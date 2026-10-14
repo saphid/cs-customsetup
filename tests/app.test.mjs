@@ -486,3 +486,14 @@ test('import treats scan codes, letter case and quoted lines as the same key', (
   assert.deepEqual(state.binds, [{ key: 'h', command: 'slot6' }], 'w back to default; H replaces h');
   assert.equal(state.extraCfg, '', 'the scancode unbind for W and the quoted h bind are gone');
 });
+
+test('modifier, navigation and keypad scan codes match their key names in both directions', () => {
+  for (const [code, name] of [['scancode224', 'ctrl'], ['scancode225', 'shift'], ['scancode82', 'uparrow'], ['scancode88', 'kp_enter']]) {
+    const a = normalizeProfile({ extraCfg: `unbind "${name}"` });
+    importConfig(`bind "${code}" "slot7"`, a);
+    assert.equal(a.extraCfg, '', `${code} replaces unbind ${name}`);
+    const b = normalizeProfile({ extraCfg: `unbind "${code}"` });
+    importConfig(`bind "${name}" "slot7"`, b);
+    assert.equal(b.extraCfg, '', `${name} replaces unbind ${code}`);
+  }
+});

@@ -54,6 +54,12 @@ $CsFolder = 'steamapps\common\Counter-Strike Global Offensive'
 # The station mouse's DPI is set once by the admin and remembered. A damaged
 # file is reported and ignored, so it can never block a reset.
 $StationFile = Join-Path $StateDir 'station.json'
+# Puts $source in place of $target in one step. Move-Item -Force deletes the
+# target first, so a failed move would lose it; File.Replace never does.
+function Set-FileAtomic([string]$source, [string]$target) {
+    if (Test-Path $target) { [IO.File]::Replace($source, $target, $null) } else { [IO.File]::Move($source, $target) }
+}
+
 # Reads the remembered settings, then applies this command's overrides. Read
 # again after taking the station lock, so a queued command sees the latest file.
 function Read-StationSettings([switch]$Quiet) {
@@ -89,7 +95,7 @@ function Save-StationSettings {
     if ($MouseDpi -le 0 -and -not $ConfirmCloudOff) { return }
     New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
     @{ mouseDpi = $StationDpi; cloudOffConfirmed = $CloudOffConfirmed } | ConvertTo-Json | Set-Content "$StationFile.tmp" -Encoding UTF8
-    Move-Item "$StationFile.tmp" $StationFile -Force
+    Set-FileAtomic "$StationFile.tmp" $StationFile
 }
 
 # ---------------------------------------------------------------- signatures
@@ -218,7 +224,7 @@ function Update-Baseline([string]$steam, $game, [string[]]$userCfgs) {
     # Written to a temporary file first, so a crash never leaves half a manifest.
     [pscustomobject]@{ created = (Get-Date).ToString('o'); steamRoot = $steam; mouse = Get-WindowsMouse; files = $files } |
         ConvertTo-Json -Depth 5 | Set-Content "$BaselineFile.tmp" -Encoding UTF8
-    Move-Item "$BaselineFile.tmp" $BaselineFile -Force
+    Set-FileAtomic "$BaselineFile.tmp" $BaselineFile
     return $true
 }
 
@@ -293,7 +299,7 @@ function Save-CachedBundle([string]$code, [byte[]]$bytes, [string]$signature) {
     $file = Join-Path $CacheDir "$code.json"
     [pscustomobject]@{ saved = (Get-Date).ToString('o'); signature = $signature; body = [Convert]::ToBase64String($bytes) } |
         ConvertTo-Json | Set-Content "$file.tmp" -Encoding UTF8
-    Move-Item "$file.tmp" $file -Force
+    Set-FileAtomic "$file.tmp" $file
 }
 
 # The signed body names the code and station DPI it was made for; a bundle for

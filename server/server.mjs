@@ -197,7 +197,10 @@ export function createApp({ store, publicUrl, trustProxy = false, createLimit = 
     const update = [
       "$ErrorActionPreference = 'Stop'",
       "$dir = $env:LOADOUT_DIR; $f = Join-Path $dir 'Loadout.ps1'; $store = Join-Path $dir 'Loadout.signed'; $floorFile = Join-Path $dir 'Loadout.version'",
-      // Highest station version seen on this PC: it only goes up.
+      // One launcher at a time updates, checks and hands over the script.
+      "$lock = New-Object Threading.Mutex($false, 'Local\\LoadoutLauncher')",
+      'try { [void]$lock.WaitOne(60000) } catch [Threading.AbandonedMutexException] { }',
+      // Highest station version seen on this PC (read under the lock): it only goes up.
       `$min = ${minVersion}`,
       'if (Test-Path $floorFile) { $v = 0; if ([int]::TryParse((Get-Content $floorFile -Raw).Trim(), [ref]$v) -and $v -gt $min) { $min = $v } }',
       '$rsa = New-Object Security.Cryptography.RSACryptoServiceProvider',
@@ -221,7 +224,8 @@ export function createApp({ store, publicUrl, trustProxy = false, createLimit = 
       // Script and signature are kept together in one file, replaced in one step.
       '  $tmp = "$store.$PID.tmp"',
       '  [IO.File]::WriteAllText($tmp, (@{ signature = $signature; script = [Convert]::ToBase64String($bytes) } | ConvertTo-Json -Compress))',
-      '  Move-Item $tmp $store -Force',
+      // File.Replace swaps in one step; Move-Item -Force would delete the old store first.
+      '  if (Test-Path $store) { [IO.File]::Replace($tmp, $store, $null) } else { [IO.File]::Move($tmp, $store) }',
       '} catch {',
       '  Remove-Item "$store.$PID.tmp" -ErrorAction SilentlyContinue',
       `  Write-Host "Loadout: could not update the station app from ${url} ($($_.Exception.Message)). Using the copy downloaded earlier."`,
@@ -234,8 +238,10 @@ export function createApp({ store, publicUrl, trustProxy = false, createLimit = 
       '  $ok = (Test-Signed $bytes $entry.signature) -and $version -ge $min',
       '} catch { }',
       "if (-not $ok) { Write-Host 'Loadout: no verified copy of the station app on this PC. Download Loadout.cmd again from the admin page.'; exit 1 }",
-      'if ($version -gt $min) { try { Set-Content $floorFile $version } catch { } }',
+      // A newer version runs only once the floor is recorded, so nothing older is accepted afterwards.
+      "if ($version -gt $min) { try { [IO.File]::WriteAllText($floorFile, [string]$version) } catch { Write-Host \"Loadout: cannot write $floorFile ($($_.Exception.Message)).\"; exit 1 } }",
       'if (-not ((Test-Path $f) -and [Convert]::ToBase64String([IO.File]::ReadAllBytes($f)) -eq $entry.script)) { [IO.File]::WriteAllBytes($f, $bytes) }',
+      '$lock.ReleaseMutex()',
     ].join('\n');
     const lines = [
       '@echo off',

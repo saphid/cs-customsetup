@@ -46,10 +46,18 @@ for (let i = 0; i < 26; i++) HID[4 + i] = String.fromCharCode(97 + i);
 for (let i = 1; i <= 9; i++) HID[29 + i] = String(i);
 HID[39] = '0';
 for (let i = 1; i <= 12; i++) HID[57 + i] = `f${i}`;
+// Modifiers, navigation and keypad (USB HID usage table), with CS2's key names.
+Object.assign(HID, { 71: 'scrolllock', 72: 'pause', 73: 'ins', 74: 'home', 75: 'pgup', 76: 'del', 77: 'end', 78: 'pgdn',
+  79: 'rightarrow', 80: 'leftarrow', 81: 'downarrow', 82: 'uparrow', 83: 'numlock', 84: 'kp_slash', 85: 'kp_multiply',
+  86: 'kp_minus', 87: 'kp_plus', 88: 'kp_enter', 89: 'kp_end', 90: 'kp_downarrow', 91: 'kp_pgdn', 92: 'kp_leftarrow',
+  93: 'kp_5', 94: 'kp_rightarrow', 95: 'kp_home', 96: 'kp_uparrow', 97: 'kp_pgup', 98: 'kp_ins', 99: 'kp_del',
+  224: 'ctrl', 225: 'shift', 226: 'alt', 228: 'rctrl', 229: 'rshift', 230: 'ralt' });
+// Other spellings CS2 accepts for the same key.
+const NAME_ALIASES = { semicolon: ';', lctrl: 'ctrl', lshift: 'shift', lalt: 'alt' };
 export const keyId = (key) => {
   const k = String(key).toLowerCase().replace(/^"|"$/g, '');
   const m = k.match(/^scancode(\d+)$/);
-  return (m && HID[m[1]]) || k;
+  return (m && HID[m[1]]) || NAME_ALIASES[k] || k;
 };
 // Key named by a bind/unbind line, quoted or not.
 const lineKey = (line) => {
