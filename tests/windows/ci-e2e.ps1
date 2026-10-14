@@ -5,7 +5,7 @@ param([int]$Port = 18431)
 $ErrorActionPreference = 'Stop'
 $repo = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 $server = "http://127.0.0.1:$Port"
-$env:PORT = "$Port"; $env:HOST = '127.0.0.1'; $env:DB_FILE = Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }) 'cssetup-e2e.db'
+$env:PORT = "$Port"; $env:HOST = '127.0.0.1'; $env:PUBLIC_URL = $server; $env:DB_FILE = Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }) 'cssetup-e2e.db'
 $node = Start-Process node -ArgumentList "--disable-warning=ExperimentalWarning `"$(Join-Path $repo 'server\server.mjs')`"" -PassThru -NoNewWindow
 try {
     for ($i = 0; $i -lt 30; $i++) { try { Invoke-WebRequest $server -UseBasicParsing | Out-Null; break } catch { Start-Sleep 1 } }
