@@ -105,7 +105,7 @@ Check 'signature: setup from another key refused' ($r.code -eq 1 -and $r.text -m
 # Server down: a setup this PC loaded before still loads from the signed cache.
 $r = Station @('-Code', $CodeA, '-Server', 'http://127.0.0.1:9')
 Check 'offline: cached setup loads with a warning' ($r.code -eq 0 -and $r.text -match 'server is unreachable' -and (Read (Join-Path $cfgDir 'cssetup.cfg')) -match '(?m)^sensitivity "0.45"') $r.text
-$r = Station @('-Code', $CodeB, '-Server', 'http://127.0.0.1:9')
+$r = Station @('-Code', '999999', '-Server', 'http://127.0.0.1:9')   # never loaded here, so not cached
 Check 'offline: uncached setup fails cleanly' ($r.code -eq 1 -and $r.text -match 'Could not reach') $r.text
 
 # Admin readiness report.
